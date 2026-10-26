@@ -20,8 +20,12 @@ Last updated: 2026-10-26
 - Live stem preview from growing temporary files while separation runs; defaults to vocals.
 - CPU and experimental Snapdragon GPU/NPU (NNAPI) backend selection with Snapdragon/arm64/API gate.
 - Backend-aware cache key and requested/effective-backend metadata with visible fallback reason.
-- Live progress publishes temporary stem paths and available/total frames through WorkManager.
-- GitHub Actions DSP tests, separation tests and debug APK build.
+- Live progress publishes temporary stem paths, available/total frames, backend status and inference statistics through WorkManager.
+- Compute card with persisted CPU thread count (1..reported cores) and NNAPI Balanced/Accelerator-only policy.
+- Compute stats card with process CPU share, GPU sysfs best-effort value, NPU status and average inference time.
+- Splash screen plus a short Compose fade/slide launch animation.
+- Stable CI signing key with `versionCode` derived from `github.run_number`.
+- GitHub Actions DSP tests, separation tests, APK build, signature verification and release publishing.
 - Rolling `latest` GitHub release with a directly downloadable APK.
 
 ## Verified
@@ -30,10 +34,12 @@ Last updated: 2026-10-26
 - Backend detection and backend-ID parsing have JVM tests.
 - GitHub Actions `test` job passes.
 - GitHub Actions `build` job passes and produces a debug APK.
-- The release workflow attached `StemSep-debug.apk` to the `latest` release; the asset is 137,347,470 bytes and was downloaded and checked through `gh release download`.
+- The release workflow attaches `StemSep-debug.apk` to the `latest` release; the asset is published and has been downloaded/checked through `gh release download`. Exact APK size varies by build.
 - CI runs `40396988552` and `40397551805` passed both jobs, including `:separation:testDebugUnitTest` and `:app:assembleDebug`.
+- Stable signing passed CI run `40400420284`; `apksigner` reports certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
+- Compute controls, stats, splash and UI changes passed CI run `40400848607`; the APK also verified with the stable certificate.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
-- Live-preview code compiles in CI (runs `40396988552` and `40397551805`); it has not been runtime-tested on a device yet.
+- Live-preview code compiles in CI; it has not been runtime-tested on a device yet.
 
 ## Not yet verified on a physical device
 
@@ -42,8 +48,10 @@ The Android runtime path still needs a real-device smoke test:
 - first-run model download and SHA verification;
 - MediaCodec decode of common formats;
 - ONNX inference on the target CPU;
-- NNAPI GPU/NPU selection, FP16 output and CPU fallback;
+- NNAPI GPU/NPU selection, FP16 output, Balanced fallback and Accelerator-only failure;
 - live vocal/instrumental/mix playback while separation runs;
+- compute settings persistence, CPU usage, GPU sysfs availability and inference timing;
+- splash handoff and launch animation timing;
 - cache hit after a successful run;
 - playback, seek and mode switching;
 - WAV/FLAC export into a SAF directory;
@@ -52,14 +60,17 @@ The Android runtime path still needs a real-device smoke test:
 
 ## Known limitations
 
-- Debug APK only; debug signing.
+- Development debug build with a stable debug key; not a Play Store production build.
 - The model is not bundled and requires network access on first use.
 - No audio waveform or duration display before separation.
 - No background playback service; playback is tied to the Activity/ViewModel lifetime.
 - The cache is in `cacheDir`, so Android may evict it under storage pressure.
 - The notification has no cancel action yet; cancellation is available in the app UI.
 - Kim Vocal 2 can be slower than realtime on the test phone.
-- The Snapdragon GPU/NPU path is experimental. NNAPI does not expose a GPU-only/NPU-only switch, and unsupported nodes may fall back to CPU.
+- The Snapdragon GPU/NPU path is experimental. NNAPI does not expose a GPU-only/NPU-only switch, and unsupported nodes may fall back to CPU in Balanced mode.
+- GPU/NPU utilization and core counts are not publicly exposed by Android. GPU sysfs sampling is best-effort; NPU utilization is unavailable.
+- CPU statistics are the process's share of total CPU capacity, not a per-core utilization graph.
+- CPU thread count is not part of the cache key, so a cache hit does not rerun inference with new thread settings.
 - QNN HTP NPU is not enabled because the current float32 models would need quantization and calibration.
 - Live preview and final playback do not request audio focus yet.
 - Live preview is tied to the Activity/ViewModel; if the process dies, it is lost even if the worker continues.
@@ -68,13 +79,15 @@ The Android runtime path still needs a real-device smoke test:
 
 ## Suggested next steps
 
-1. Install the latest APK and run a short track through the default Mobile model on CPU.
-2. Run the same track with Snapdragon GPU/NPU selected; compare time, output quality and fallback behavior.
-3. Verify live vocal preview play/pause/seek during separation and the automatic switch to the committed stems.
-4. Verify the two exported files and check that vocals + instrumental reconstruct the source.
-5. Test a cache hit, a cancelled job and a backend switch (cache key must change).
-6. Force an NNAPI fallback and verify the **Requested / Active / Fallback** text and cached metadata.
-7. Measure peak memory and runtime on a 3-5 minute track, including live preview while inference runs.
-8. Add a notification cancel action if cancellation from the shade is required.
-9. Evaluate QNN HTP with a quantized model before calling NPU support complete.
-10. Consider a release build type and a stable update channel once runtime testing is complete.
+1. Uninstall the old `app.stemsep.debug` once, install the stable-key APK, then verify a later build installs as an update.
+2. Run a short track through the default Mobile model on CPU and verify the splash/launch animation.
+3. Change CPU worker threads and verify the stats card, time and thermal behavior.
+4. Run the same track with Snapdragon GPU/NPU Balanced; compare time, output quality and fallback behavior.
+5. Switch to Accelerator-only and verify that a failed NNAPI session produces an error instead of silently using CPU.
+6. Verify live vocal preview play/pause/seek during separation and the automatic switch to the committed stems.
+7. Verify the two exported files and check that vocals + instrumental reconstruct the source.
+8. Test a cache hit, a cancelled job, a backend switch and an accelerator-profile switch (cache key must change).
+9. Force an NNAPI fallback and verify the **Requested / Active / Fallback** text and cached metadata.
+10. Measure peak memory and runtime on a 3-5 minute track, including live preview and stats sampling while inference runs.
+11. Add a notification cancel action if cancellation from the shade is required.
+12. Evaluate QNN HTP with a quantized model before calling NPU support complete.

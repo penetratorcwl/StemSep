@@ -65,6 +65,7 @@ Important files:
 - `separation/src/main/kotlin/app/stemsep/separation/LiveStemPlayer.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/LiveStemPreview.kt`
 - `app/src/main/kotlin/app/stemsep/ui/MainViewModel.kt`
+- `app/src/main/kotlin/app/stemsep/ui/ComputeStatsSampler.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
 - `.github/workflows/android.yml`
@@ -91,8 +92,8 @@ SAF URI
   -> MediaExtractor/MediaCodec decode to 44.1 kHz stereo f32
   -> MDX STFT + ONNX inference (CPU or Snapdragon NNAPI) + overlap-add
   -> vocals.f32 + instrumental.f32 (flushed progressively)
-  -> live preview reads growing files; WorkManager publishes paths/frames
-  -> meta.json (requested/effective backend + fallback reason)
+  -> live preview reads growing files; WorkManager publishes paths/frames/stats
+  -> meta.json (requested/effective backend, fallback, CPU threads, accelerator mode)
   -> cache commit
   -> AudioTrack mixer / SAF export
 
@@ -102,10 +103,10 @@ Live preview starts after the first separated chunk and defaults to vocals. It i
 Cache key:
 
 ```text
-<source-sha256>-<model-id>-<requested-backend>-v<separator-version>
+<source-sha256>-<model-id>-<requested-backend>-<profile>-v<separator-version>
 ```
 
-`SEPARATOR_VERSION` is `3`. The cache is under `context.cacheDir/stems`; work files are under `context.cacheDir/stems-work`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version. Metadata stores requested/effective backends and an optional fallback reason.
+`SEPARATOR_VERSION` is `3`; `profile` is `balanced` or `accelerator` (CPU always `balanced`). The cache is under `context.cacheDir/stems`; work files are under `context.cacheDir/stems-work`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version. Metadata stores requested/effective backends, an optional fallback reason, the CPU thread count and the accelerator mode. CPU thread count is not part of the key because it does not change the audio.
 
 ## Models
 
@@ -138,9 +139,10 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 
 ## Compute backends
 
-- CPU: ONNX Runtime CPU EP, four intra-op threads. This is the default and the existing benchmark path.
+- CPU: ONNX Runtime CPU EP with a user-selectable intra-op thread count (default 4, capped at reported cores) and one inter-op thread. This is the default and the existing benchmark path.
 - Snapdragon GPU/NPU: Android NNAPI EP, gated by Qualcomm Snapdragon + `arm64-v8a` + API 27+. It requests FP16; the Android/Qualcomm driver decides whether GPU, NPU or CPU handles each node.
-- NNAPI session creation failure falls back to CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
+- NNAPI Balanced mode retries on CPU if session creation fails. Accelerator-only mode adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
+- Compute stats show process CPU share and average inference time. GPU sysfs busy values are best-effort; Android does not expose reliable GPU/NPU utilization or core counts.
 - QNN HTP is not enabled. The current models are float32; QNN HTP requires quantized models and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
 - See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or cache keys.
 
@@ -156,15 +158,20 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - Live preview reads the worker's growing temporary stem files; it must not read a partial file after the work directory is deleted.
 - Keep model inference on `Dispatchers.IO` or a worker, never on the main thread.
 - GPU and NPU are not separate options: NNAPI delegates to the Qualcomm driver. Show requested/effective backend and fallback reason; do not claim a specific NPU/GPU placement.
+- CPU thread count is a real setting (1..reported cores). GPU/NPU core count is not controllable through NNAPI; the Accelerator-only policy only disables CPU fallback.
+- Compute stats sampling must stay off the main thread. Do not present sysfs GPU values as guaranteed.
+- The app uses the AndroidX splash screen and a short Compose fade/slide entrance; keep the post-splash theme pointing at `Theme.StemSep`.
 
 ## Release process
 
 Every push to `master`/`main`:
 
 1. Runs `:core-dsp:test`.
-2. Builds `:app:assembleDebug`.
-3. Uploads the Actions artifact.
-4. Updates the rolling `latest` GitHub release with `StemSep-debug.apk`.
+2. Decodes the stable signing keystore from `SIGNING_KEYSTORE_BASE64`.
+3. Builds `:app:assembleDebug` with `STEMSEP_VERSION_CODE=github.run_number`.
+4. Verifies the APK certificate with `apksigner`.
+5. Uploads the Actions artifact.
+6. Updates the rolling `latest` GitHub release with `StemSep-debug.apk`.
 
 Direct APK:
 
@@ -174,14 +181,16 @@ https://github.com/penetratorcwl/StemSep/releases/latest/download/StemSep-debug.
 
 The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not commit a token. If release publishing fails, check the repository's Actions permissions before changing the workflow.
 
+Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNING_KEY_ALIAS` (`stemsep`) and `SIGNING_KEY_PASSWORD`. The stable certificate SHA-256 is `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`. Never commit the keystore or print the secrets. Builds before `035f3a7` used an ephemeral key, so users must uninstall `app.stemsep.debug` once before installing a stable-key APK. Push builds fail if the signing secret is missing; pull-request builds may use an ephemeral debug key.
+
 ## Current status
 
 - DSP: 7/7 local JUnit tests pass.
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
-- CI: DSP test, separation tests and debug APK build pass in runs `40396988552` and `40397551805`.
-- Release: latest debug APK is published on GitHub Releases; current asset is 137,347,470 bytes.
-- Runtime on a physical phone: live preview, NNAPI and fallback are not yet verified on a device.
-- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, debug signing only, cache in `cacheDir`.
+- Stable signing: CI run `40400420284` passed; certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
+- Compute controls/stats/UI/splash: CI run `40400848607` passed; the APK verified with the stable certificate.
+- Runtime on a physical phone: live preview, NNAPI, fallback, compute stats and splash timing are not yet verified on a device.
+- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, no reliable GPU/NPU utilization, cache in `cacheDir`.
 - Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.
 
 ## Working rules

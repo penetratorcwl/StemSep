@@ -65,4 +65,12 @@ class ComputeBackendTest {
         assertEquals(ComputeBackend.CPU, ComputeBackend.fromId(null))
         assertEquals(ComputeBackend.CPU, ComputeBackend.fromId("unknown"))
     }
+
+    @Test
+    fun parsesAcceleratorModesAndFallsBackToBalanced() {
+        assertEquals(AcceleratorMode.BALANCED, AcceleratorMode.fromId("balanced"))
+        assertEquals(AcceleratorMode.ACCELERATOR_ONLY, AcceleratorMode.fromId("accelerator"))
+        assertEquals(AcceleratorMode.BALANCED, AcceleratorMode.fromId(null))
+        assertEquals(AcceleratorMode.BALANCED, AcceleratorMode.fromId("unknown"))
+    }
 }

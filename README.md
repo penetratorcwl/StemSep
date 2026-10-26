@@ -1,6 +1,6 @@
 # StemSep
 
-On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer. While separation runs, the already-separated vocal is available as a live preview and switches to the committed stems when the job finishes.
+On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer. While separation runs, the already-separated vocal is available as a live preview and switches to the committed stems when the job finishes. CPU worker threads and the NNAPI accelerator policy are configurable, with live CPU/inference statistics and a splash/launch animation.
 
 ## Download
 
@@ -10,6 +10,8 @@ The latest debug APK is attached directly to the rolling GitHub release, so ther
 - **Release:** <https://github.com/penetratorcwl/StemSep/releases/tag/latest>
 
 The first separation downloads the selected ONNX model; model weights are not bundled in the APK.
+
+The APK uses a stable CI signing key. If you are updating from a build made before stable signing, uninstall `app.stemsep.debug` once; later builds install as updates. See [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md).
 
 ## Models
 
@@ -28,7 +30,7 @@ Both use stereo 44.1 kHz, periodic Hann, `n_fft` 6144/7680, hop 1024, reflect pa
 
 - `:core-dsp` — pure JVM DSP: MDX STFT/iSTFT, streaming overlap-add, sinc resampler, WAV reader/writer, mixer. Unit tested locally and in CI.
 - `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference (CPU or Snapdragon NNAPI), cache, WAV/FLAC export.
-- `:app` — Compose UI, WorkManager foreground job, live stem preview, AudioTrack mixer/player, SAF pickers.
+- `:app` — Compose UI, WorkManager foreground job, live stem preview, compute settings/statistics, splash/launch animation, AudioTrack mixer/player, SAF pickers.
 
 ## Documentation
 
@@ -53,7 +55,7 @@ CI runs all three on every push. The debug APK is uploaded as the `stemsep-debug
 ## Notes
 
 - Minimum SDK 26, target/compile SDK 36.
-- ONNX Runtime 1.28.0 CPU execution provider, 4 intra-op threads. Snapdragon GPU/NPU via NNAPI is available as an experimental option; GPU and NPU are one NNAPI option because the Qualcomm driver chooses per operation. The UI shows requested/active backend and any session-creation fallback. The earlier NNAPI benchmark was slower on the test phone and needs re-measuring on the target device.
+- ONNX Runtime 1.28.0 CPU execution provider. CPU worker threads are selectable from 1 to the reported core count (default 4). Snapdragon GPU/NPU via NNAPI is available as an experimental option with Balanced or Accelerator-only CPU fallback policy; GPU and NPU are one NNAPI option because the Qualcomm driver chooses per operation. The UI shows requested/active backend, any session-creation fallback, CPU usage and average inference time. Android does not expose reliable GPU/NPU utilization or core counts. The earlier NNAPI benchmark was slower on the test phone and needs re-measuring on the target device.
 - The QNN HTP NPU path is not enabled yet because the current models are float32 and HTP requires quantized models.
 - The model license is not bundled; the user downloads the model directly from its source.
 - FLAC export uses `java-flac-encoder` (LGPL).

@@ -156,6 +156,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 progress = 0f,
                 error = null,
                 message = null,
+                cpuUsagePercent = null,
+                gpuUsagePercent = null,
+                inferenceAverageMillis = 0,
+                inferenceChunks = 0,
+                workerThreads = 0,
             )
         }
     }
@@ -183,6 +188,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 progress = 0f,
                 error = null,
                 message = null,
+                cpuUsagePercent = null,
+                gpuUsagePercent = null,
+                inferenceAverageMillis = 0,
+                inferenceChunks = 0,
+                workerThreads = 0,
             )
         }
     }
@@ -592,13 +602,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        val acceleratorMode = AcceleratorMode.fromId(stems.metadata.acceleratorMode)
+        selectedAcceleratorMode = acceleratorMode
+        prefs.edit().putString("accelerator_mode", acceleratorMode.cacheId).apply()
         _state.update {
             it.copy(
                 cached = stems,
                 backend = ComputeBackend.fromId(stems.metadata.requestedBackend),
                 effectiveBackend = ComputeBackend.fromId(stems.metadata.effectiveBackend),
                 fallbackReason = stems.metadata.fallbackReason,
-                acceleratorMode = AcceleratorMode.fromId(stems.metadata.acceleratorMode),
+                acceleratorMode = acceleratorMode,
                 playerReady = true,
                 durationFrames = stems.metadata.frameCount,
                 positionFrames = 0,

@@ -442,8 +442,11 @@ private fun StatsCard(
             )
             MetricRow(
                 label = "GPU",
-                value = state.gpuUsagePercent?.let { "${it.roundToInt()}%" }
-                    ?: if (active == ComputeBackend.SNAPDRAGON_NNAPI) "driver-managed" else "—",
+                value = if (active == ComputeBackend.SNAPDRAGON_NNAPI) {
+                    state.gpuUsagePercent?.let { "${it.roundToInt()}%" } ?: "driver-managed"
+                } else {
+                    "—"
+                },
                 detail = if (active == ComputeBackend.SNAPDRAGON_NNAPI) {
                     "NNAPI may place operations on the GPU"
                 } else {
