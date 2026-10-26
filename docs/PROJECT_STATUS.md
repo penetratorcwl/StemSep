@@ -43,7 +43,7 @@ Last updated: 2026-10-26
 - Stable signing passed CI run `40400420284`; `apksigner` reports certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
 - Compute controls, stats, splash and UI changes passed CI run `40400848607`; the APK also verified with the stable certificate.
 - Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom passed CI run `40406906028`; the APK verified with the stable certificate and the `latest` release asset was `137,451,530` bytes.
-- Auto CPU threads, playback header/mode chips, power/energy, GPU counter deltas, settings back handling and the delayed notification passed CI run `40413756893`; the APK verified with the stable certificate and the `latest` release asset is `137,467,914` bytes (`sha256:a8e9c0a3c63100d3eb5030427c208a9514e7e20b8005b64723e1b503439a5b36`).
+- Auto CPU threads, playback header/mode chips, power/energy, GPU counter deltas, settings back handling and the delayed notification passed CI run `40413756893`; the follow-up docs-only run `40414141571` also passed both jobs. The APK verified with the stable certificate and the `latest` release asset was `137,467,914` bytes.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
 - Live-preview code compiles in CI; it has not been runtime-tested on a device yet.
 
