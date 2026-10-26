@@ -62,8 +62,9 @@ Important files:
 - `separation/src/main/kotlin/app/stemsep/separation/StemCache.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemExporter.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemPlayer.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/LiveStemPlayer.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/LiveStemPreview.kt`
 - `app/src/main/kotlin/app/stemsep/ui/MainViewModel.kt`
-- `app/src/main/kotlin/app/stemsep/playback/SourcePreviewPlayer.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
 - `.github/workflows/android.yml`
@@ -89,20 +90,22 @@ SAF URI
   -> model download + SHA-256 verification
   -> MediaExtractor/MediaCodec decode to 44.1 kHz stereo f32
   -> MDX STFT + ONNX inference (CPU or Snapdragon NNAPI) + overlap-add
-  -> vocals.f32 + instrumental.f32 + meta.json (effective backend)
+  -> vocals.f32 + instrumental.f32 (flushed progressively)
+  -> live preview reads growing files; WorkManager publishes paths/frames
+  -> meta.json (requested/effective backend + fallback reason)
   -> cache commit
   -> AudioTrack mixer / SAF export
 
-While this runs, SourcePreviewPlayer may play the original source.
+Live preview starts after the first separated chunk and defaults to vocals. It is released before the committed stems are opened.
 ```
 
 Cache key:
 
 ```text
-<source-sha256>-<model-id>-<backend>-v<separator-version>
+<source-sha256>-<model-id>-<requested-backend>-v<separator-version>
 ```
 
-`SEPARATOR_VERSION` is `2`. The cache is under `context.cacheDir/stems`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version and backend.
+`SEPARATOR_VERSION` is `3`. The cache is under `context.cacheDir/stems`; work files are under `context.cacheDir/stems-work`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version. Metadata stores requested/effective backends and an optional fallback reason.
 
 ## Models
 
@@ -149,9 +152,10 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - The worker is a `CoroutineWorker`; `getForegroundInfo()` is `suspend`.
 - The foreground service type is `dataSync`; manifest permissions must stay consistent.
 - Source audio and export tree use SAF; do not replace with broad storage permissions.
-- The stem player and source preview must be released when the source/model/backend changes.
-- The source preview is a separate `MediaPlayer`; it is not a live stem preview.
+- The live and final stem players must be released when the source/model/backend changes, on job success/failure/cancel, and in `MainViewModel.onCleared()`.
+- Live preview reads the worker's growing temporary stem files; it must not read a partial file after the work directory is deleted.
 - Keep model inference on `Dispatchers.IO` or a worker, never on the main thread.
+- GPU and NPU are not separate options: NNAPI delegates to the Qualcomm driver. Show requested/effective backend and fallback reason; do not claim a specific NPU/GPU placement.
 
 ## Release process
 
@@ -174,10 +178,11 @@ The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not co
 
 - DSP: 7/7 local JUnit tests pass.
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
-- CI: DSP test, separation tests and debug APK build pass in run `40387537046` (re-check after changes).
+- CI: DSP test, separation tests and debug APK build pass in run `40387537046`; the live-preview change is pending a new GitHub Actions run.
 - Release: latest debug APK is published on GitHub Releases.
-- Runtime on a physical phone: source preview, NNAPI and fallback are not yet verified on a device.
-- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, debug signing only, cache in `cacheDir`.
+- Runtime on a physical phone: live preview, NNAPI and fallback are not yet verified on a device.
+- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, debug signing only, cache in `cacheDir`.
+- Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.
 
 ## Working rules
 

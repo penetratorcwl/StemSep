@@ -12,7 +12,9 @@ data class StemMetadata(
     val sampleRate: Int,
     val createdAt: Long,
     val separatorVersion: Int,
-    val backend: String,
+    val requestedBackend: String,
+    val effectiveBackend: String,
+    val fallbackReason: String? = null,
 )
 
 data class CachedStems(
@@ -48,7 +50,16 @@ class StemCache(context: Context) {
                 sampleRate = json.getInt("sampleRate"),
                 createdAt = json.getLong("createdAt"),
                 separatorVersion = json.getInt("separatorVersion"),
-                backend = json.optString("backend", ComputeBackend.CPU.cacheId),
+                requestedBackend = json.optString(
+                    "requestedBackend",
+                    json.optString("backend", ComputeBackend.CPU.cacheId),
+                ),
+                effectiveBackend = json.optString(
+                    "effectiveBackend",
+                    json.optString("backend", ComputeBackend.CPU.cacheId),
+                ),
+                fallbackReason = json.optString("fallbackReason")
+                    .takeIf { it.isNotBlank() },
             )
         }.getOrNull() ?: return null
 
@@ -95,7 +106,9 @@ class StemCache(context: Context) {
             .put("sampleRate", metadata.sampleRate)
             .put("createdAt", metadata.createdAt)
             .put("separatorVersion", metadata.separatorVersion)
-            .put("backend", metadata.backend)
+            .put("requestedBackend", metadata.requestedBackend)
+            .put("effectiveBackend", metadata.effectiveBackend)
+            .put("fallbackReason", metadata.fallbackReason ?: "")
         File(directory, META_FILE).writeText(json.toString())
     }
 

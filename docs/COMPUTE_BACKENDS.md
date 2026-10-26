@@ -38,7 +38,27 @@ Android NNAPI is a system API, not a direct GPU or NPU API. The Qualcomm NNAPI d
 - the effective device may differ by Android version, driver and model;
 - `USE_FP16` is requested for throughput, so output can differ slightly from the CPU path.
 
-The engine attempts the requested backend and retries with CPU if session creation fails. The cache metadata records the effective backend (`cpu` or `nnapi`). If ORT falls back per operation inside a successful NNAPI session, the metadata still says `nnapi`; this is a limitation of the Java API.
+GPU and NPU are therefore one UI option, not two switches. The UI reports the requested and active provider; it cannot report which individual nodes ran on GPU versus NPU.
+
+The engine attempts the requested backend and retries with CPU if session creation fails. The failure message is stored as `fallbackReason`, sent through WorkManager progress and persisted in `meta.json`. The UI shows:
+
+- **Requested** — the chip selected by the user;
+- **Active** — `engine.activeBackend` while running, or the cached effective backend;
+- **Fallback** — the exception message when NNAPI session creation failed.
+
+If ORT falls back per operation inside a successful NNAPI session, the active backend remains `nnapi` and no fallback reason is available; this is a limitation of the Java API.
+
+## Cache impact
+
+The cache key includes the requested backend:
+
+```text
+<source-sha256>-<model-id>-<requested-backend>-v<separator-version>
+```
+
+`SEPARATOR_VERSION` is `3`. Metadata stores `requestedBackend`, `effectiveBackend` and optional `fallbackReason`. Cache entries created before this format are ignored.
+
+A NNAPI session that fell back to CPU is still cached under the requested NNAPI key, while its metadata records the CPU effective backend. This avoids a second expensive run after the fallback, but a future NNAPI attempt can receive that cache hit without retrying NNAPI. Clear the app cache or change the source/model/backend to force a new attempt.
 
 ## Why there is no QNN HTP backend yet
 
@@ -54,16 +74,6 @@ Planned path if NPU work continues:
 4. Benchmark HTP against CPU and NNAPI on real Snapdragon devices.
 5. Keep CPU fallback and document the model-format requirement.
 
-## Cache impact
-
-The cache key now includes the backend:
-
-```text
-<source-sha256>-<model-id>-<backend>-v<separator-version>
-```
-
-`SEPARATOR_VERSION` is `2`. Cache entries created before this change are ignored because the key and metadata format changed.
-
 ## Device verification
 
 Use a release/debug build on the target phone and watch the backend log:
@@ -72,7 +82,7 @@ Use a release/debug build on the target phone and watch the backend log:
 adb logcat -s StemSepOnnx
 ```
 
-The app logs `Falling back to CPU ...` when NNAPI session creation fails. A successful NNAPI session does not prove that every node used the accelerator. Compare wall-clock time, output quality and battery/thermal behavior between CPU and Snapdragon modes.
+The app logs `Falling back to CPU ...` when NNAPI session creation fails. The UI also shows the fallback reason from WorkManager progress. A successful NNAPI session does not prove that every node used the accelerator. Compare wall-clock time, output quality and battery/thermal behavior between CPU and Snapdragon modes.
 
 ## Verification status
 

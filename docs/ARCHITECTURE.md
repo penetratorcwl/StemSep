@@ -26,20 +26,21 @@
 - `AudioDecoder` uses `MediaExtractor` + `MediaCodec` and emits interleaved stereo float PCM at 44.1 kHz.
 - `ComputeBackend` and `ComputeCapabilityDetector` model CPU vs Snapdragon NNAPI support.
 - `OnnxMdxEngine` owns an ONNX Runtime session, selects the execution provider and exposes an `MdxInference` callback.
-- `StemCache` owns the on-disk stem cache and metadata, including the effective backend.
-- `SeparationPipeline` orchestrates hash -> cache lookup -> model -> decode -> inference -> commit.
+- `StemCache` owns the on-disk stem cache and metadata, including requested/effective backends and fallback reason.
+- `SeparationPipeline` orchestrates hash -> cache lookup -> model -> decode -> inference -> commit, and publishes growing stem files for live preview.
 - `StemExporter` writes WAV or FLAC through the Storage Access Framework.
-- `StemPlayer` mixes two stem files into one `AudioTrack` and supports seek/mode/gain.
+- `StemPlayer` mixes two committed stem files into one `AudioTrack` and supports seek/mode/gain.
+- `LiveStemPlayer` reads growing temporary stem files while separation is running.
+- `LiveStemPreview` describes the temporary files and available/total frames.
 
 ### `:app`
 
 - `StemSepApp` creates the singleton `AppContainer`.
 - `AppContainer` owns `StemCache`, `SeparationPipeline` and `StemExporter`.
 - `MainActivity` hosts Compose and requests `POST_NOTIFICATIONS` on API 33+.
-- `MainViewModel` exposes `UiState`, observes WorkManager, owns the player and export coroutine.
-- `SeparationWorker` is a `CoroutineWorker` with a data-sync foreground notification.
-- `SourcePreviewPlayer` plays the original SAF URI with `MediaPlayer` while separation runs.
-- `StemSepScreen` is the Material 3 dark UI: source, model/backend, progress, source preview, stem player and export.
+- `MainViewModel` exposes `UiState`, observes WorkManager, owns the live/final players and export coroutine.
+- `SeparationWorker` is a `CoroutineWorker` with a data-sync foreground notification; it forwards live-preview metadata and backend status through WorkManager progress.
+- `StemSepScreen` is the Material 3 dark UI: source, model/backend, progress, live stem preview, final stem player and export.
 
 ## Separation flow
 
@@ -58,9 +59,9 @@
 8. `MdxStreamingSeparator` runs the ONNX model over 261,120-sample chunks and writes:
    - `vocals.f32`
    - `instrumental.f32`
-9. `StemCache` writes metadata (including the effective backend) and atomically moves the temporary directory into the cache.
-10. The worker returns the cache key; `MainViewModel` opens the stems in `StemPlayer`.
-11. While steps 4-9 run, `SourcePreviewPlayer` can play the original source independently.
+9. After each flushed chunk, the pipeline publishes `LiveStemPreview` (temporary paths, available frames, total frames, sample rate). The worker forwards it through WorkManager progress; `MainViewModel` opens `LiveStemPlayer` when the first frames are available.
+10. `StemCache` writes metadata (`requestedBackend`, `effectiveBackend`, `fallbackReason`) and atomically moves the temporary directory into the cache.
+11. The worker returns the cache key; `MainViewModel` releases the live player and opens the committed stems in `StemPlayer`.
 
 ## DSP contract
 
@@ -98,19 +99,20 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - `frameCount` must be positive.
 - Each stem file must be exactly `frameCount * 8` bytes (2 channels × 4 bytes).
 - `separatorVersion` must match `ModelCatalog.SEPARATOR_VERSION`; a mismatch is a cache miss.
-- The backend is part of the cache key and is stored in `meta.json`.
-- Temporary directories are deleted when separation fails or is cancelled.
+- The requested backend is part of the cache key; `meta.json` stores both requested and effective backends plus an optional fallback reason.
+- Temporary directories are deleted when separation fails or is cancelled; on success they are renamed into the cache.
 
 ## Playback
 
-- While a job runs, `SourcePreviewPlayer` can play the original source through `MediaPlayer`; it is released on job completion/failure/cancel.
-- One `AudioTrack` in float PCM mode is shared by both stems.
+- While a job runs, `LiveStemPlayer` reads the growing temporary stems and starts in **Vocals** mode. It is released on job completion/failure/cancel before the committed cache entry is opened.
+- One `AudioTrack` in float PCM mode is shared by both stems in each player.
 - The player reads fixed-size chunks and mixes according to `StemMode`:
   - `VOCALS`: vocals only.
   - `INSTRUMENTAL`: instrumental only.
   - `MIX`: both stems, with a separate vocal gain.
 - Seeking sets a frame position and increments a generation counter so an in-flight read cannot overwrite the new position.
-- `StemPlayer` is closed when the source or model changes and in `MainViewModel.onCleared()`.
+- `StemPlayer` and `LiveStemPlayer` are closed when the source/model/backend changes and in `MainViewModel.onCleared()`.
+- Live preview uses WorkManager progress keys `preview_vocals`, `preview_instrumental`, `preview_available`, `preview_total` and `preview_sample_rate`.
 
 ## Export
 
@@ -135,4 +137,5 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - Never commit `.onnx` files or model weights.
 - Keep model downloads on HTTPS and verify the pinned SHA-256.
 - Do not introduce a second AudioTrack unless the player is redesigned; synchronization depends on one track.
-- Keep the separation engine independent of Compose and WorkManager where possible.
+- Keep the separation engine independent of Compose and WorkManager where possible; live-preview paths travel through generic progress callbacks.
+- Do not expose partial PCM through the cache before commit; live preview reads the work directory directly.

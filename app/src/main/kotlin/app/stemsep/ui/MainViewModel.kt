@@ -6,31 +6,31 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import app.stemsep.StemSepApp
-import app.stemsep.playback.SourcePreviewPlayer
+import app.stemsep.dsp.StemMode
 import app.stemsep.separation.CachedStems
 import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ComputeCapabilities
 import app.stemsep.separation.ComputeCapabilityDetector
 import app.stemsep.separation.ExportFormat
+import app.stemsep.separation.LiveStemPlayer
 import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
 import app.stemsep.separation.StemPlayer
 import app.stemsep.work.SeparationWorker
-import app.stemsep.dsp.StemMode
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 
 data class UiState(
@@ -38,6 +38,8 @@ data class UiState(
     val selectedName: String? = null,
     val modelId: String = ModelCatalog.DEFAULT_MODEL_ID,
     val backend: ComputeBackend = ComputeBackend.CPU,
+    val effectiveBackend: ComputeBackend? = null,
+    val fallbackReason: String? = null,
     val workId: UUID? = null,
     val running: Boolean = false,
     val phase: String? = null,
@@ -48,10 +50,14 @@ data class UiState(
     val durationFrames: Long = 0,
     val positionFrames: Long = 0,
     val isPlaying: Boolean = false,
-    val previewReady: Boolean = false,
-    val previewPlaying: Boolean = false,
-    val previewPositionMs: Int = 0,
-    val previewDurationMs: Int = 0,
+    val livePreviewReady: Boolean = false,
+    val livePreviewPlaying: Boolean = false,
+    val livePositionFrames: Long = 0,
+    val liveAvailableFrames: Long = 0,
+    val liveTotalFrames: Long = 0,
+    val liveSampleRate: Int = 44_100,
+    val liveMode: StemMode = StemMode.VOCALS,
+    val liveVocalLevel: Float = 1f,
     val mode: StemMode = StemMode.MIX,
     val vocalLevel: Float = 1f,
     val exporting: Boolean = false,
@@ -67,9 +73,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var player: StemPlayer? = null
-    private var previewPlayer: SourcePreviewPlayer? = null
+    private var livePlayer: LiveStemPlayer? = null
+    private var liveKey: String? = null
     private var observeJob: Job? = null
-    private var previewTickJob: Job? = null
 
     fun selectAudio(uri: Uri?) {
         if (uri == null) return
@@ -83,19 +89,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workManager.cancelAllWorkByTag(SeparationWorker.WORK_TAG)
         observeJob?.cancel()
         releasePlayer()
-        releasePreview()
+        releaseLivePreview()
         _state.value = UiState(
             selectedUri = uri,
             selectedName = displayName(uri),
             modelId = _state.value.modelId,
             backend = _state.value.backend,
+            effectiveBackend = if (_state.value.backend == ComputeBackend.CPU) {
+                ComputeBackend.CPU
+            } else {
+                null
+            },
         )
     }
 
     fun selectModel(modelId: String) {
         if (modelId == _state.value.modelId) return
         releasePlayer()
-        releasePreview()
+        releaseLivePreview()
         _state.update {
             it.copy(
                 modelId = modelId,
@@ -104,6 +115,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 durationFrames = 0,
                 positionFrames = 0,
                 isPlaying = false,
+                effectiveBackend = null,
+                fallbackReason = null,
                 phase = null,
                 progress = 0f,
                 error = null,
@@ -116,10 +129,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (backend == _state.value.backend) return
         if (!capabilities.supports(backend)) return
         releasePlayer()
-        releasePreview()
+        releaseLivePreview()
         _state.update {
             it.copy(
                 backend = backend,
+                effectiveBackend = if (backend == ComputeBackend.CPU) {
+                    ComputeBackend.CPU
+                } else {
+                    null
+                },
+                fallbackReason = null,
                 cached = null,
                 playerReady = false,
                 durationFrames = 0,
@@ -138,7 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val uri = current.selectedUri ?: return
         if (current.running) return
         releasePlayer()
-        releasePreview()
+        releaseLivePreview()
         observeJob?.cancel()
         val model = ModelCatalog.byId(current.modelId)
         val request = OneTimeWorkRequestBuilder<SeparationWorker>()
@@ -164,6 +183,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 durationFrames = 0,
                 positionFrames = 0,
                 isPlaying = false,
+                effectiveBackend = if (current.backend == ComputeBackend.CPU) {
+                    ComputeBackend.CPU
+                } else {
+                    null
+                },
+                fallbackReason = null,
                 message = null,
             )
         }
@@ -173,51 +198,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             request,
         )
         observeWork(request.id)
-        startSourcePreview(uri)
     }
 
     fun cancel() {
         val id = _state.value.workId ?: return
         workManager.cancelWorkById(id)
-        releasePreview()
+        releaseLivePreview()
         _state.update {
             it.copy(
                 phase = "CANCELLED",
-                previewReady = false,
-                previewPlaying = false,
-                previewPositionMs = 0,
+                running = false,
             )
         }
     }
 
-    fun togglePreview() {
-        val currentPlayer = previewPlayer ?: return
-        if (currentPlayer.isPlaying()) {
-            currentPlayer.pause()
-            previewTickJob?.cancel()
+    fun toggleLivePlay() {
+        val currentPlayer = livePlayer ?: return
+        runCatching {
+            if (currentPlayer.isPlaying()) {
+                currentPlayer.pause()
+                _state.update {
+                    it.copy(
+                        livePreviewPlaying = false,
+                        livePositionFrames = currentPlayer.currentFrame(),
+                    )
+                }
+            } else {
+                if (_state.value.livePositionFrames >= _state.value.liveTotalFrames) {
+                    currentPlayer.seekTo(0)
+                    _state.update { it.copy(livePositionFrames = 0) }
+                }
+                currentPlayer.play()
+                _state.update { it.copy(livePreviewPlaying = true, error = null) }
+            }
+        }.onFailure { error ->
             _state.update {
                 it.copy(
-                    previewPlaying = false,
-                    previewPositionMs = currentPlayer.positionMs(),
+                    livePreviewPlaying = false,
+                    error = error.message ?: "Live playback failed",
                 )
-            }
-        } else {
-            if (_state.value.previewPositionMs >= _state.value.previewDurationMs) {
-                currentPlayer.seekTo(0)
-                _state.update { it.copy(previewPositionMs = 0) }
-            }
-            if (currentPlayer.play()) {
-                _state.update { it.copy(previewPlaying = true) }
-                startPreviewTicker()
             }
         }
     }
 
-    fun seekPreview(positionMs: Int) {
-        val currentPlayer = previewPlayer ?: return
-        val target = positionMs.coerceIn(0, _state.value.previewDurationMs)
-        currentPlayer.seekTo(target.toLong())
-        _state.update { it.copy(previewPositionMs = target) }
+    fun seekLive(frame: Long) {
+        val currentPlayer = livePlayer ?: return
+        val total = _state.value.liveTotalFrames
+        val target = frame.coerceIn(0L, total)
+        currentPlayer.seekTo(target)
+        if (target >= total) currentPlayer.pause()
+        _state.update {
+            it.copy(
+                livePositionFrames = target,
+                livePreviewPlaying = if (target >= total) false else it.livePreviewPlaying,
+            )
+        }
+    }
+
+    fun setLiveMode(mode: StemMode) {
+        livePlayer?.setMode(mode)
+        _state.update { it.copy(liveMode = mode) }
+    }
+
+    fun setLiveVocalLevel(level: Float) {
+        val value = level.coerceIn(0f, 1f)
+        livePlayer?.setVocalLevel(value)
+        _state.update { it.copy(liveVocalLevel = value) }
     }
 
     fun togglePlay() {
@@ -299,7 +345,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         observeJob?.cancel()
         releasePlayer()
-        releasePreview()
+        releaseLivePreview()
         super.onCleared()
     }
 
@@ -311,6 +357,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     WorkInfo.State.ENQUEUED,
                     WorkInfo.State.RUNNING,
                     WorkInfo.State.BLOCKED -> {
+                        updateLivePreview(info.progress)
+                        val effective = info.progress
+                            .getString(SeparationWorker.KEY_EFFECTIVE_BACKEND)
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let(ComputeBackend::fromId)
+                        val fallback = info.progress
+                            .getString(SeparationWorker.KEY_FALLBACK_REASON)
+                            ?.takeIf { it.isNotBlank() }
                         _state.update {
                             it.copy(
                                 running = true,
@@ -320,12 +374,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     SeparationWorker.KEY_PROGRESS,
                                     0f,
                                 ),
+                                effectiveBackend = effective ?: it.effectiveBackend,
+                                fallbackReason = fallback ?: it.fallbackReason,
                             )
                         }
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
-                        releasePreview()
+                        releaseLivePreview()
                         _state.update {
                             it.copy(
                                 running = false,
@@ -343,17 +399,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     WorkInfo.State.FAILED -> {
-                        releasePreview()
+                        releaseLivePreview()
                         val message = info.outputData.getString(SeparationWorker.KEY_ERROR)
                             ?: "Separation failed"
                         _state.update { it.copy(running = false, error = message) }
                     }
 
                     WorkInfo.State.CANCELLED -> {
-                        releasePreview()
+                        releaseLivePreview()
                         _state.update { it.copy(running = false, phase = "CANCELLED") }
                     }
                 }
+            }
+        }
+    }
+
+    private fun updateLivePreview(data: Data) {
+        val vocalsPath = data.getString(SeparationWorker.KEY_PREVIEW_VOCALS).orEmpty()
+        val instrumentalPath = data.getString(SeparationWorker.KEY_PREVIEW_INSTRUMENTAL).orEmpty()
+        val available = data.getLong(SeparationWorker.KEY_PREVIEW_AVAILABLE, 0L)
+        val total = data.getLong(SeparationWorker.KEY_PREVIEW_TOTAL, 0L)
+        val sampleRate = data.getInt(SeparationWorker.KEY_PREVIEW_SAMPLE_RATE, 0)
+        if (vocalsPath.isBlank() || instrumentalPath.isBlank() || total <= 0 || sampleRate <= 0) {
+            return
+        }
+
+        val vocalsFile = File(vocalsPath)
+        val instrumentalFile = File(instrumentalPath)
+        if (!vocalsFile.isFile || !instrumentalFile.isFile) return
+
+        val boundedAvailable = available.coerceIn(0L, total)
+        val key = "$vocalsPath|$instrumentalPath|$total|$sampleRate"
+        if (livePlayer == null || liveKey != key) {
+            if (boundedAvailable <= 0) {
+                _state.update {
+                    it.copy(
+                        liveAvailableFrames = 0,
+                        liveTotalFrames = total,
+                        liveSampleRate = sampleRate,
+                    )
+                }
+                return
+            }
+            releaseLivePreview()
+            val created = runCatching {
+                LiveStemPlayer(
+                    vocalsFile = vocalsFile,
+                    instrumentalFile = instrumentalFile,
+                    totalFrames = total,
+                    sampleRate = sampleRate,
+                ) { frame ->
+                    _state.update { state ->
+                        state.copy(
+                            livePositionFrames = frame,
+                            livePreviewPlaying = livePlayer?.isPlaying() == true,
+                        )
+                    }
+                }
+            }.getOrElse { error ->
+                _state.update {
+                    it.copy(
+                        liveAvailableFrames = boundedAvailable,
+                        liveTotalFrames = total,
+                        liveSampleRate = sampleRate,
+                        message = "Live preview unavailable: ${error.message ?: "unknown error"}",
+                    )
+                }
+                return
+            }
+            livePlayer = created
+            liveKey = key
+            _state.update {
+                it.copy(
+                    livePreviewReady = true,
+                    livePreviewPlaying = false,
+                    livePositionFrames = 0,
+                    liveAvailableFrames = boundedAvailable,
+                    liveTotalFrames = total,
+                    liveSampleRate = sampleRate,
+                    liveMode = StemMode.VOCALS,
+                    liveVocalLevel = 1f,
+                )
+            }
+        } else {
+            _state.update {
+                it.copy(
+                    liveAvailableFrames = boundedAvailable,
+                    liveTotalFrames = total,
+                    liveSampleRate = sampleRate,
+                )
             }
         }
     }
@@ -381,7 +515,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 cached = stems,
-                backend = ComputeBackend.fromId(stems.metadata.backend),
+                backend = ComputeBackend.fromId(stems.metadata.requestedBackend),
+                effectiveBackend = ComputeBackend.fromId(stems.metadata.effectiveBackend),
+                fallbackReason = stems.metadata.fallbackReason,
                 playerReady = true,
                 durationFrames = stems.metadata.frameCount,
                 positionFrames = 0,
@@ -392,68 +528,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun startSourcePreview(uri: Uri) {
-        previewPlayer = SourcePreviewPlayer(
-            context = getApplication(),
-            uri = uri,
-            onPrepared = { durationMs ->
-                _state.update {
-                    it.copy(
-                        previewReady = true,
-                        previewDurationMs = durationMs,
-                        previewPositionMs = 0,
-                    )
-                }
-            },
-            onCompletion = {
-                previewTickJob?.cancel()
-                _state.update {
-                    it.copy(
-                        previewPlaying = false,
-                        previewPositionMs = it.previewDurationMs,
-                    )
-                }
-            },
-            onError = { message ->
-                _state.update {
-                    it.copy(
-                        error = message,
-                        previewReady = false,
-                        previewPlaying = false,
-                    )
-                }
-            },
-        )
-    }
-
-    private fun startPreviewTicker() {
-        previewTickJob?.cancel()
-        previewTickJob = viewModelScope.launch {
-            while (isActive) {
-                val currentPlayer = previewPlayer ?: break
-                _state.update {
-                    it.copy(
-                        previewPositionMs = currentPlayer.positionMs(),
-                        previewPlaying = currentPlayer.isPlaying(),
-                    )
-                }
-                if (!currentPlayer.isPlaying()) break
-                delay(250)
-            }
-        }
-    }
-
-    private fun releasePreview() {
-        previewTickJob?.cancel()
-        previewTickJob = null
-        previewPlayer?.close()
-        previewPlayer = null
+    private fun releaseLivePreview() {
+        livePlayer?.close()
+        livePlayer = null
+        liveKey = null
         _state.update {
             it.copy(
-                previewReady = false,
-                previewPlaying = false,
-                previewPositionMs = 0,
-                previewDurationMs = 0,
+                livePreviewReady = false,
+                livePreviewPlaying = false,
+                livePositionFrames = 0,
+                liveAvailableFrames = 0,
+                liveTotalFrames = 0,
+                liveSampleRate = 44_100,
             )
         }
     }

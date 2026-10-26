@@ -26,6 +26,8 @@ enum class SeparationPhase {
 data class SeparationProgress(
     val phase: SeparationPhase,
     val fraction: Float,
+    val effectiveBackend: ComputeBackend? = null,
+    val fallbackReason: String? = null,
 )
 
 data class SeparationResult(
@@ -44,6 +46,7 @@ class SeparationPipeline(
         model: ModelSpec,
         backend: ComputeBackend = ComputeBackend.CPU,
         onProgress: (SeparationProgress) -> Unit = {},
+        onPreview: (LiveStemPreview) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): SeparationResult = withContext(Dispatchers.IO) {
         val sourceInfo = readSourceInfo(uri)
@@ -81,33 +84,70 @@ class SeparationPipeline(
             var vocalFrames = 0L
             var instrumentalFrames = 0L
             var effectiveBackend = backend
+            var fallbackReason: String? = null
+            val vocalsFile = File(tempDirectory, StemCache.VOCALS_FILE)
+            val instrumentalFile = File(tempDirectory, StemCache.INSTRUMENTAL_FILE)
+            onPreview(
+                LiveStemPreview(
+                    vocalsFile = vocalsFile,
+                    instrumentalFile = instrumentalFile,
+                    availableFrames = 0,
+                    totalFrames = decoded.frameCount,
+                    sampleRate = decoded.sampleRate,
+                ),
+            )
             FloatPcmFileSource(decodedFile, decoded.frameCount).use { source ->
-                FloatPcmFileWriter(File(tempDirectory, StemCache.VOCALS_FILE)).use { vocals ->
-                    FloatPcmFileWriter(File(tempDirectory, StemCache.INSTRUMENTAL_FILE))
-                        .use { instrumental ->
-                            OnnxMdxEngine(
-                                modelFile = modelFile,
-                                requestedBackend = backend,
-                            ).use { engine ->
-                                effectiveBackend = engine.activeBackend
-                                MdxStreamingSeparator(
-                                    config = model.config,
-                                    inference = engine.inference(model.config),
-                                ).separate(
-                                    source = source,
-                                    vocalsSink = vocals,
-                                    instrumentalSink = instrumental,
-                                    onProgress = { fraction ->
-                                        onProgress(
-                                            SeparationProgress(SeparationPhase.SEPARATING, fraction),
-                                        )
-                                    },
-                                    isCancelled = isCancelled,
-                                )
-                            }
-                            vocalFrames = vocals.frameCount
-                            instrumentalFrames = instrumental.frameCount
+                FloatPcmFileWriter(vocalsFile).use { vocals ->
+                    FloatPcmFileWriter(instrumentalFile).use { instrumental ->
+                        OnnxMdxEngine(
+                            modelFile = modelFile,
+                            requestedBackend = backend,
+                        ).use { engine ->
+                            effectiveBackend = engine.activeBackend
+                            fallbackReason = engine.fallbackReason
+                            onProgress(
+                                SeparationProgress(
+                                    phase = SeparationPhase.SEPARATING,
+                                    fraction = 0f,
+                                    effectiveBackend = effectiveBackend,
+                                    fallbackReason = fallbackReason,
+                                ),
+                            )
+                            MdxStreamingSeparator(
+                                config = model.config,
+                                inference = engine.inference(model.config),
+                            ).separate(
+                                source = source,
+                                vocalsSink = vocals,
+                                instrumentalSink = instrumental,
+                                onProgress = { fraction ->
+                                    onPreview(
+                                        LiveStemPreview(
+                                            vocalsFile = vocalsFile,
+                                            instrumentalFile = instrumentalFile,
+                                            availableFrames = minOf(
+                                                vocals.frameCount,
+                                                instrumental.frameCount,
+                                            ),
+                                            totalFrames = decoded.frameCount,
+                                            sampleRate = decoded.sampleRate,
+                                        ),
+                                    )
+                                    onProgress(
+                                        SeparationProgress(
+                                            phase = SeparationPhase.SEPARATING,
+                                            fraction = fraction,
+                                            effectiveBackend = effectiveBackend,
+                                            fallbackReason = fallbackReason,
+                                        ),
+                                    )
+                                },
+                                isCancelled = isCancelled,
+                            )
                         }
+                        vocalFrames = vocals.frameCount
+                        instrumentalFrames = instrumental.frameCount
+                    }
                 }
             }
 
@@ -115,6 +155,15 @@ class SeparationPipeline(
                 throw IOException("Separated stems do not match the decoded length")
             }
 
+            onPreview(
+                LiveStemPreview(
+                    vocalsFile = vocalsFile,
+                    instrumentalFile = instrumentalFile,
+                    availableFrames = decoded.frameCount,
+                    totalFrames = decoded.frameCount,
+                    sampleRate = decoded.sampleRate,
+                ),
+            )
             onProgress(SeparationProgress(SeparationPhase.FINALIZING, 0f))
             val metadata = StemMetadata(
                 modelId = model.id,
@@ -123,11 +172,20 @@ class SeparationPipeline(
                 sampleRate = decoded.sampleRate,
                 createdAt = System.currentTimeMillis(),
                 separatorVersion = ModelCatalog.SEPARATOR_VERSION,
-                backend = effectiveBackend.cacheId,
+                requestedBackend = backend.cacheId,
+                effectiveBackend = effectiveBackend.cacheId,
+                fallbackReason = fallbackReason,
             )
             val stems = cache.commit(cacheKey, tempDirectory, metadata)
             committed = true
-            onProgress(SeparationProgress(SeparationPhase.FINALIZING, 1f))
+            onProgress(
+                SeparationProgress(
+                    phase = SeparationPhase.FINALIZING,
+                    fraction = 1f,
+                    effectiveBackend = effectiveBackend,
+                    fallbackReason = fallbackReason,
+                ),
+            )
             SeparationResult(stems, cached = false)
         } finally {
             decodedFile.delete()

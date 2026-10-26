@@ -18,8 +18,10 @@ import app.stemsep.MainActivity
 import app.stemsep.R
 import app.stemsep.StemSepApp
 import app.stemsep.separation.ComputeBackend
+import app.stemsep.separation.LiveStemPreview
 import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
+import app.stemsep.separation.SeparationProgress
 import kotlinx.coroutines.CancellationException
 
 class SeparationWorker(
@@ -38,24 +40,48 @@ class SeparationWorker(
 
         var lastPhase: SeparationPhase? = null
         var lastPercent = -1
+        var latestProgress = SeparationProgress(SeparationPhase.HASHING, 0f)
+        var latestPreview: LiveStemPreview? = null
+        var effectiveBackend: ComputeBackend? = null
+        var fallbackReason: String? = null
+
+        fun publish(progress: SeparationProgress, preview: LiveStemPreview?) {
+            latestProgress = progress
+            progress.effectiveBackend?.let { effectiveBackend = it }
+            progress.fallbackReason?.let { fallbackReason = it }
+            if (preview != null) latestPreview = preview
+            setProgressAsync(
+                workDataOf(
+                    KEY_PHASE to progress.phase.name,
+                    KEY_PROGRESS to progress.fraction,
+                    KEY_EFFECTIVE_BACKEND to (effectiveBackend?.cacheId ?: ""),
+                    KEY_FALLBACK_REASON to (fallbackReason ?: ""),
+                    KEY_PREVIEW_VOCALS to (latestPreview?.vocalsFile?.absolutePath ?: ""),
+                    KEY_PREVIEW_INSTRUMENTAL to
+                        (latestPreview?.instrumentalFile?.absolutePath ?: ""),
+                    KEY_PREVIEW_AVAILABLE to (latestPreview?.availableFrames ?: 0L),
+                    KEY_PREVIEW_TOTAL to (latestPreview?.totalFrames ?: 0L),
+                    KEY_PREVIEW_SAMPLE_RATE to (latestPreview?.sampleRate ?: 0),
+                ),
+            )
+            val percent = (progress.fraction * 100).toInt()
+            if (progress.phase != lastPhase || percent != lastPercent) {
+                lastPhase = progress.phase
+                lastPercent = percent
+                notifyProgress(progress.fraction, progress.phase)
+            }
+        }
+
         return try {
             val result = pipeline.separate(
                 uri = Uri.parse(uriString),
                 model = model,
                 backend = backend,
                 onProgress = { progress ->
-                    val percent = (progress.fraction * 100).toInt()
-                    if (progress.phase != lastPhase || percent != lastPercent) {
-                        lastPhase = progress.phase
-                        lastPercent = percent
-                        setProgressAsync(
-                            workDataOf(
-                                KEY_PHASE to progress.phase.name,
-                                KEY_PROGRESS to progress.fraction,
-                            ),
-                        )
-                        notifyProgress(progress.fraction, progress.phase)
-                    }
+                    publish(progress, latestPreview)
+                },
+                onPreview = { preview ->
+                    publish(latestProgress, preview)
                 },
                 isCancelled = { isStopped },
             )
@@ -149,6 +175,13 @@ class SeparationWorker(
         const val KEY_BACKEND = "backend"
         const val KEY_PHASE = "phase"
         const val KEY_PROGRESS = "progress"
+        const val KEY_EFFECTIVE_BACKEND = "effective_backend"
+        const val KEY_FALLBACK_REASON = "fallback_reason"
+        const val KEY_PREVIEW_VOCALS = "preview_vocals"
+        const val KEY_PREVIEW_INSTRUMENTAL = "preview_instrumental"
+        const val KEY_PREVIEW_AVAILABLE = "preview_available"
+        const val KEY_PREVIEW_TOTAL = "preview_total"
+        const val KEY_PREVIEW_SAMPLE_RATE = "preview_sample_rate"
         const val KEY_CACHE_KEY = "cache_key"
         const val KEY_ERROR = "error"
 

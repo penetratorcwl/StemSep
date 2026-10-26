@@ -5,7 +5,7 @@ This directory contains the technical context for humans and AI agents working o
 - [Architecture](ARCHITECTURE.md): modules, runtime flow, DSP and playback invariants.
 - [Models](MODELS.md): pinned models, hashes, input configurations and licensing notes.
 - [Compute backends](COMPUTE_BACKENDS.md): CPU, Snapdragon NNAPI, fallback and the QNN/NPU path.
-- [Playback](PLAYBACK.md): source preview during separation and the synchronized stem player.
+- [Playback](PLAYBACK.md): live stem preview during separation and the synchronized stem player.
 - [Build and release](BUILD_AND_RELEASE.md): local commands, GitHub Actions and the APK release process.
 - [Project status](PROJECT_STATUS.md): what is implemented, verified and still open.
 
@@ -21,7 +21,7 @@ The short AI onboarding file is [`../AGENTS.md`](../AGENTS.md).
 - Latest debug build release: <https://github.com/penetratorcwl/StemSep/releases/tag/latest>
 - Model weights are never committed to the repository; they are downloaded and SHA-256 verified on first use.
 - Default inference is the ONNX Runtime CPU EP; Snapdragon GPU/NPU via NNAPI is experimental.
-- The app can play the source while separation runs; stems become playable after the cache commit.
+- The app exposes growing separated stems as a live preview (vocals by default) while separation runs, then switches to the committed stems.
 
 ## Product boundary
 

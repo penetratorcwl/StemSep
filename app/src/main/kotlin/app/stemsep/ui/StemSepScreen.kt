@@ -19,7 +19,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -118,6 +117,8 @@ fun StemSepScreen(viewModel: MainViewModel) {
             ModelCard(
                 selectedModelId = state.modelId,
                 selectedBackend = state.backend,
+                effectiveBackend = state.effectiveBackend,
+                fallbackReason = state.fallbackReason,
                 capabilities = viewModel.capabilities,
                 enabled = !state.running,
                 onSelect = viewModel::selectModel,
@@ -128,13 +129,16 @@ fun StemSepScreen(viewModel: MainViewModel) {
                 ProgressCard(
                     phase = state.phase,
                     progress = state.progress,
+                    livePreviewReady = state.livePreviewReady,
                     onCancel = viewModel::cancel,
                 )
-                if (state.previewReady) {
-                    SourcePreviewCard(
+                if (state.livePreviewReady) {
+                    LivePreviewCard(
                         state = state,
-                        onToggle = viewModel::togglePreview,
-                        onSeek = viewModel::seekPreview,
+                        onToggle = viewModel::toggleLivePlay,
+                        onSeek = viewModel::seekLive,
+                        onMode = viewModel::setLiveMode,
+                        onVocalLevel = viewModel::setLiveVocalLevel,
                     )
                 }
             } else {
@@ -204,6 +208,8 @@ private fun SourceCard(
 private fun ModelCard(
     selectedModelId: String,
     selectedBackend: ComputeBackend,
+    effectiveBackend: ComputeBackend?,
+    fallbackReason: String?,
     capabilities: ComputeCapabilities,
     enabled: Boolean,
     onSelect: (String) -> Unit,
@@ -255,38 +261,64 @@ private fun ModelCard(
                     selectedBackend == ComputeBackend.CPU ->
                         "Runs on the ARM CPU with ONNX Runtime (4 intra-op threads)."
                     capabilities.canUseSnapdragonNnapi ->
-                        "Snapdragon ${capabilities.socLabel}: Android NNAPI may use the GPU/NPU. Unsupported operations fall back to CPU."
+                        "Snapdragon ${capabilities.socLabel}: NNAPI lets the Qualcomm driver choose GPU, NPU or CPU per operation. GPU and NPU are not separate switches."
                     else ->
                         "Snapdragon acceleration is unavailable on this device; CPU is used."
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
+            Text(
+                text = "Requested: ${selectedBackend.displayName}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            effectiveBackend?.let { effective ->
+                Text(
+                    text = "Active: ${effective.displayName}",
+                    color = if (effective != selectedBackend) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            fallbackReason?.let { reason ->
+                Text(
+                    text = "Fallback: $reason",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun SourcePreviewCard(
+private fun LivePreviewCard(
     state: UiState,
     onToggle: () -> Unit,
-    onSeek: (Int) -> Unit,
+    onSeek: (Long) -> Unit,
+    onMode: (StemMode) -> Unit,
+    onVocalLevel: (Float) -> Unit,
 ) {
-    val duration = state.previewDurationMs
+    val total = state.liveTotalFrames
+    val position = state.livePositionFrames.coerceIn(0L, total)
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Source preview", style = MaterialTheme.typography.titleMedium)
+            Text("Live separated vocals", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "${formatMs(state.previewPositionMs)} / ${formatMs(duration)}",
+                text = "${formatTime(position, state.liveSampleRate)} / ${formatTime(total, state.liveSampleRate)} · buffered ${formatTime(state.liveAvailableFrames, state.liveSampleRate)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Slider(
-                value = state.previewPositionMs.coerceIn(0, duration).toFloat(),
-                onValueChange = { onSeek(it.roundToInt()) },
-                valueRange = 0f..max(1f, duration.toFloat()),
+                value = position.toFloat(),
+                onValueChange = { onSeek(it.toLong()) },
+                valueRange = 0f..max(1f, total.toFloat()),
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -295,13 +327,38 @@ private fun SourcePreviewCard(
             ) {
                 IconButton(onClick = onToggle) {
                     Icon(
-                        imageVector = if (state.previewPlaying) Icons.Default.Pause
+                        imageVector = if (state.livePreviewPlaying) Icons.Default.Pause
                         else Icons.Default.PlayArrow,
-                        contentDescription = if (state.previewPlaying) "Pause source" else "Play source",
+                        contentDescription = if (state.livePreviewPlaying) {
+                            "Pause live vocals"
+                        } else {
+                            "Play live vocals"
+                        },
                         modifier = Modifier.size(36.dp),
                     )
                 }
-                Text("Listen while the model works")
+                Text("Play while the model works")
+            }
+            Text("Mode", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StemMode.values().forEach { mode ->
+                    FilterChip(
+                        selected = state.liveMode == mode,
+                        onClick = { onMode(mode) },
+                        label = { Text(modeLabel(mode)) },
+                    )
+                }
+            }
+            if (state.liveMode == StemMode.MIX) {
+                Text(
+                    text = "Vocal level ${(state.liveVocalLevel * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Slider(
+                    value = state.liveVocalLevel,
+                    onValueChange = onVocalLevel,
+                    valueRange = 0f..1f,
+                )
             }
         }
     }
@@ -311,6 +368,7 @@ private fun SourcePreviewCard(
 private fun ProgressCard(
     phase: String?,
     progress: Float,
+    livePreviewReady: Boolean,
     onCancel: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -330,6 +388,13 @@ private fun ProgressCard(
             ) {
                 Text("${(progress.coerceIn(0f, 1f) * 100).roundToInt()}%")
                 TextButton(onClick = onCancel) { Text("Cancel") }
+            }
+            if (!livePreviewReady) {
+                Text(
+                    text = "Live vocals appear here after the first separated chunk.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
@@ -359,7 +424,7 @@ private fun PlayerCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "Engine: ${state.backend.displayName}",
+                text = "Engine: ${(state.effectiveBackend ?: state.backend).displayName}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -510,13 +575,6 @@ private fun modeLabel(mode: StemMode): String = when (mode) {
 private fun formatTime(frames: Long, sampleRate: Int): String {
     if (sampleRate <= 0) return "0:00"
     val totalSeconds = (frames / sampleRate).coerceAtLeast(0)
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return "$minutes:${seconds.toString().padStart(2, '0')}"
-}
-
-private fun formatMs(milliseconds: Int): String {
-    val totalSeconds = (milliseconds / 1000).coerceAtLeast(0)
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "$minutes:${seconds.toString().padStart(2, '0')}"

@@ -1,16 +1,26 @@
 # Playback
 
-## Source preview during separation
+## Live stem preview during separation
 
-While a separation job is running, the UI can show a **Source preview** card. It uses a separate `MediaPlayer` instance over the original SAF URI, so the user can listen to the source while the model works.
+The running job exposes its temporary stem files through WorkManager progress data. Once the first chunk is written, the UI opens `LiveStemPlayer`, which reads the growing `vocals.f32` and `instrumental.f32` files while inference continues.
 
-- The preview is prepared asynchronously after the WorkManager job is enqueued; tap play in the **Source preview** card to start it.
-- Play/pause and seek are independent of the separation job.
-- The preview is released when the job succeeds, fails or is cancelled.
-- It is not a background playback service; it is tied to the Activity/ViewModel lifetime.
-- The preview decoder and the separation decoder both read the source. On a slow device, pausing the preview reduces CPU/IO contention.
+- The default mode is **Vocals**, because the requested behaviour is to hear the already-separated vocal during separation.
+- Modes: vocals, instrumental or mix; mix has a separate vocal gain.
+- Playback waits at the current end of the available audio and resumes when the worker writes the next chunk.
+- The slider spans the decoded track length; the buffered position is shown separately. Seeking beyond the buffered position waits for the worker to catch up.
+- The live player is released when the job succeeds, fails or is cancelled, before the committed cache entry is opened.
 
-This is intentionally a source preview, not a live stem preview. The separated stems are not playable until the worker has written and committed both `vocals.f32` and `instrumental.f32`. A future progressive-stem preview would need a shared growing-file reader and explicit synchronization with the worker.
+The live reader does not use `FloatPcmFileSource`, because that class requires the final frame count and a complete file at construction. `LiveStemPlayer` uses `RandomAccessFile` and checks the current file length on every read. The writer flushes after each chunk, so a whole number of frames is visible to the reader.
+
+WorkManager progress carries:
+
+```text
+preview_vocals, preview_instrumental, preview_available, preview_total, preview_sample_rate
+```
+
+Absolute paths are used because the worker and UI run in the same app process. Progress data is small; it contains paths and frame counts, not PCM samples.
+
+After commit, the temporary directory is renamed into the cache. The UI switches to the normal `StemPlayer` reading the committed files. A successful job does not leave a second live player running.
 
 ## Stem playback after separation
 
@@ -22,7 +32,9 @@ This is intentionally a source preview, not a live stem preview. The separated s
 
 ## Limitations
 
-- No audio focus handling yet; preview playback can overlap other apps.
+- No audio focus handling yet; live preview and stem playback can overlap other apps.
 - No media notification or lock-screen controls.
-- No background service, so playback may stop if the process is reclaimed.
-- Source preview and stem playback are mutually exclusive in the UI: the preview is released before the stem player opens.
+- No background playback service, so playback may stop if the process is reclaimed.
+- The live preview is tied to the Activity/ViewModel lifetime.
+- The live preview is not gapless across a seek while the worker is still writing; it flushes the AudioTrack on seek.
+- If the app process dies, the live preview is lost. The worker may continue, and the completed cache entry is available on the next run.

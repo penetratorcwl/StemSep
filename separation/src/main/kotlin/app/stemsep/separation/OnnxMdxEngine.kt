@@ -22,18 +22,23 @@ class OnnxMdxEngine(
     private val inputName: String
     private val outputName: String
     val activeBackend: ComputeBackend
+    val fallbackReason: String?
 
     init {
         var effectiveBackend = requestedBackend
+        var reason: String? = null
         session = try {
             createSession(modelFile, requestedBackend, threads)
         } catch (error: Exception) {
             if (requestedBackend == ComputeBackend.CPU) throw error
             Log.w(TAG, "Falling back to CPU after ${requestedBackend.cacheId} failed", error)
             effectiveBackend = ComputeBackend.CPU
+            reason = error.message?.takeIf { it.isNotBlank() }
+                ?: error::class.java.simpleName
             createSession(modelFile, ComputeBackend.CPU, threads)
         }
         activeBackend = effectiveBackend
+        fallbackReason = reason
         inputName = session.inputNames.first()
         outputName = session.outputNames.first()
     }

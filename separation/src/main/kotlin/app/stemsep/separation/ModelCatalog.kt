@@ -15,7 +15,7 @@ data class ModelSpec(
 
 object ModelCatalog {
     const val DEFAULT_MODEL_ID = "mdx-9482"
-    const val SEPARATOR_VERSION = 2
+    const val SEPARATOR_VERSION = 3
 
     val mobile = ModelSpec(
         id = DEFAULT_MODEL_ID,

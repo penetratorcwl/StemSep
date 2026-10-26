@@ -64,7 +64,7 @@ All models are float32 ONNX files. They run through ONNX Runtime on the CPU by d
 3. Add a `ModelSpec` to `separation/src/main/kotlin/app/stemsep/separation/ModelCatalog.kt`.
 4. Pin both the byte length and SHA-256. Do not trust the remote file name alone.
 5. Verify the model on a real track: stem lengths must equal the decoded frame count.
-6. Increase `ModelCatalog.SEPARATOR_VERSION` when the separation algorithm, config, or cache-key semantics change, so old cache entries are ignored. It is currently `2` because the backend was added to the key.
+6. Increase `ModelCatalog.SEPARATOR_VERSION` when the separation algorithm, config, or cache-key semantics change, so old cache entries are ignored. It is currently `3` because the backend metadata and live-preview format changed.
 7. Run `./gradlew :core-dsp:test`, `./gradlew :separation:testDebugUnitTest`, and `./gradlew :app:assembleDebug` in CI.
 
 ## Licensing
