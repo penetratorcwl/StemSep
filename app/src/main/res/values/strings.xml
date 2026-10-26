@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StemSep</string>
+    <string name="notification_channel_separation">Separacja</string>
+    <string name="notification_channel_separation_description">Postęp separacji wokalu i instrumentalu</string>
+    <string name="notification_title">StemSep</string>
+    <string name="phase_hashing">Reading the source…</string>
+    <string name="phase_downloading">Downloading the model…</string>
+    <string name="phase_decoding">Decoding audio…</string>
+    <string name="phase_separating">Separating vocals…</string>
+    <string name="phase_finalizing">Saving the stems…</string>
+</resources>

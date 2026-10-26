@@ -1,0 +1,156 @@
+package app.stemsep.work
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.net.Uri
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
+import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import app.stemsep.MainActivity
+import app.stemsep.R
+import app.stemsep.StemSepApp
+import app.stemsep.separation.ModelCatalog
+import app.stemsep.separation.SeparationPhase
+import kotlinx.coroutines.CancellationException
+
+class SeparationWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        val uriString = inputData.getString(KEY_INPUT_URI)
+            ?: return Result.failure(workDataOf(KEY_ERROR to "Missing input URI"))
+        val model = ModelCatalog.byId(inputData.getString(KEY_MODEL_ID))
+        val pipeline = (applicationContext as StemSepApp).container.pipeline
+
+        createChannel()
+        setForeground(foregroundInfo(0f, SeparationPhase.HASHING))
+
+        var lastPhase: SeparationPhase? = null
+        var lastPercent = -1
+        return try {
+            val result = pipeline.separate(
+                uri = Uri.parse(uriString),
+                model = model,
+                onProgress = { progress ->
+                    val percent = (progress.fraction * 100).toInt()
+                    if (progress.phase != lastPhase || percent != lastPercent) {
+                        lastPhase = progress.phase
+                        lastPercent = percent
+                        setProgressAsync(
+                            workDataOf(
+                                KEY_PHASE to progress.phase.name,
+                                KEY_PROGRESS to progress.fraction,
+                            ),
+                        )
+                        notifyProgress(progress.fraction, progress.phase)
+                    }
+                },
+                isCancelled = { isStopped },
+            )
+            Result.success(workDataOf(KEY_CACHE_KEY to result.stems.key))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: InterruptedException) {
+            if (isStopped) Result.failure() else Result.failure(errorData(error))
+        } catch (error: Exception) {
+            Result.failure(errorData(error))
+        }
+    }
+
+    override suspend fun getForegroundInfo(): ForegroundInfo =
+        foregroundInfo(0f, SeparationPhase.HASHING)
+
+    private fun errorData(error: Exception) = workDataOf(
+        KEY_ERROR to (error.message ?: error::class.java.simpleName),
+    )
+
+    private fun foregroundInfo(fraction: Float, phase: SeparationPhase): ForegroundInfo {
+        val notification = buildNotification(fraction, phase)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            ForegroundInfo(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun buildNotification(fraction: Float, phase: SeparationPhase) =
+        NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(applicationContext.getString(R.string.notification_title))
+            .setContentText(phaseText(phase))
+            .setContentIntent(contentIntent())
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setProgress(100, (fraction.coerceIn(0f, 1f) * 100).toInt(), false)
+            .build()
+
+    private fun notifyProgress(fraction: Float, phase: SeparationPhase) {
+        runCatching {
+            NotificationManagerCompat.from(applicationContext)
+                .notify(NOTIFICATION_ID, buildNotification(fraction, phase))
+        }
+    }
+
+    private fun contentIntent(): PendingIntent {
+        val intent = Intent(applicationContext, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        return PendingIntent.getActivity(
+            applicationContext,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun phaseText(phase: SeparationPhase): String = when (phase) {
+        SeparationPhase.HASHING -> applicationContext.getString(R.string.phase_hashing)
+        SeparationPhase.DOWNLOADING_MODEL -> applicationContext.getString(R.string.phase_downloading)
+        SeparationPhase.DECODING -> applicationContext.getString(R.string.phase_decoding)
+        SeparationPhase.SEPARATING -> applicationContext.getString(R.string.phase_separating)
+        SeparationPhase.FINALIZING -> applicationContext.getString(R.string.phase_finalizing)
+    }
+
+    private fun createChannel() {
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            applicationContext.getString(R.string.notification_channel_separation),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = applicationContext.getString(
+                R.string.notification_channel_separation_description,
+            )
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    companion object {
+        const val KEY_INPUT_URI = "input_uri"
+        const val KEY_MODEL_ID = "model_id"
+        const val KEY_PHASE = "phase"
+        const val KEY_PROGRESS = "progress"
+        const val KEY_CACHE_KEY = "cache_key"
+        const val KEY_ERROR = "error"
+
+        const val WORK_NAME = "stemsep-separation"
+        const val WORK_TAG = "stemsep-separation"
+        const val NOTIFICATION_ID = 4101
+        const val CHANNEL_ID = "stemsep-separation"
+    }
+}
