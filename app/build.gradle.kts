@@ -6,6 +6,16 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val stableKeystorePath = System.getenv("STEMSEP_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+val stableStorePassword = System.getenv("STEMSEP_KEYSTORE_PASSWORD")
+val stableKeyAlias = System.getenv("STEMSEP_KEY_ALIAS")
+val stableKeyPassword = System.getenv("STEMSEP_KEY_PASSWORD")
+val hasStableSigning = stableKeystorePath != null &&
+    !stableStorePassword.isNullOrBlank() &&
+    !stableKeyAlias.isNullOrBlank() &&
+    !stableKeyPassword.isNullOrBlank()
+val buildVersionCode = System.getenv("STEMSEP_VERSION_CODE")?.toIntOrNull() ?: 1
+
 android {
     namespace = "app.stemsep"
     compileSdk = libs.versions.compileSdk.get().toInt()
@@ -14,16 +24,33 @@ android {
         applicationId = "app.stemsep"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
+        versionCode = buildVersionCode
         versionName = "0.1.0"
+    }
+
+    signingConfigs {
+        if (hasStableSigning) {
+            create("stable") {
+                storeFile = file(stableKeystorePath!!)
+                storePassword = stableStorePassword
+                keyAlias = stableKeyAlias
+                keyPassword = stableKeyPassword
+            }
+        }
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            if (hasStableSigning) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
         }
         release {
+            if (hasStableSigning) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
             isMinifyEnabled = false
             isShrinkResources = false
             proguardFiles(
