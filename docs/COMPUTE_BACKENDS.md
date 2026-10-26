@@ -121,7 +121,7 @@ The app logs `Falling back to CPU ...` when NNAPI session creation fails. The UI
 ## Verification status
 
 - Backend detection and ID parsing have JVM unit tests.
-- Requested/effective/fallback metadata and the compute UI compile in CI. Stable signing was verified in run `40400420284`; the compute/settings/UI build passed in run `40400848607`; the chart/theme/settings build passed in run `40406906028`.
+- Requested/effective/fallback metadata and the compute UI compile in CI. Stable signing was verified in run `40400420284`; the compute/settings/UI build passed in run `40400848607`; the chart/theme/settings build passed in run `40406906028`; the Auto-thread/power/notification build passed in run `40413756893`.
 - The NNAPI path has not yet been run on a physical Snapdragon device.
 - GPU/NPU statistics have not been validated on a physical device; sysfs availability and battery current/charge-counter support are device-specific.
 - The existing NNAPI benchmark on the test phone was slower than CPU; the option is experimental until re-measured with the current pipeline.
