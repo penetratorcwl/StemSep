@@ -79,6 +79,7 @@ import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ComputeCapabilities
 import app.stemsep.separation.ExportFormat
 import app.stemsep.separation.ModelCatalog
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -192,6 +193,7 @@ fun StemSepScreen(
             ComputeCard(
                 selectedBackend = state.backend,
                 cpuThreads = state.cpuThreads,
+                autoCpuThreads = state.autoCpuThreads,
                 acceleratorMode = state.acceleratorMode,
                 effectiveBackend = state.effectiveBackend,
                 fallbackReason = state.fallbackReason,
@@ -199,6 +201,7 @@ fun StemSepScreen(
                 enabled = !state.running,
                 onSelectBackend = viewModel::selectBackend,
                 onCpuThreads = viewModel::setCpuThreads,
+                onAutoCpuThreads = viewModel::setAutoCpuThreads,
                 onAcceleratorMode = viewModel::setAcceleratorMode,
             )
 
@@ -338,6 +341,7 @@ private fun ModelCard(
 private fun ComputeCard(
     selectedBackend: ComputeBackend,
     cpuThreads: Int,
+    autoCpuThreads: Boolean,
     acceleratorMode: AcceleratorMode,
     effectiveBackend: ComputeBackend?,
     fallbackReason: String?,
@@ -345,6 +349,7 @@ private fun ComputeCard(
     enabled: Boolean,
     onSelectBackend: (ComputeBackend) -> Unit,
     onCpuThreads: (Int) -> Unit,
+    onAutoCpuThreads: (Boolean) -> Unit,
     onAcceleratorMode: (AcceleratorMode) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -376,29 +381,56 @@ private fun ComputeCard(
                 style = MaterialTheme.typography.bodySmall,
             )
 
-            Text(
-                text = "CPU worker threads: $cpuThreads of ${capabilities.cpuCores}",
-                style = MaterialTheme.typography.labelLarge,
-            )
-            if (capabilities.cpuCores > 1) {
-                Slider(
-                    value = cpuThreads.toFloat(),
-                    onValueChange = { onCpuThreads(it.roundToInt()) },
-                    valueRange = 1f..capabilities.cpuCores.toFloat(),
-                    steps = (capabilities.cpuCores - 2).coerceAtLeast(0),
-                    enabled = enabled,
-                )
-                Text(
-                    text = "More threads use more CPU capacity; fewer threads leave more headroom for playback and the rest of the device.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else {
-                Text(
-                    text = "This device reports one CPU core.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            val hideThreads = selectedBackend == ComputeBackend.SNAPDRAGON_NNAPI &&
+                acceleratorMode == AcceleratorMode.ACCELERATOR_ONLY
+            if (!hideThreads) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (autoCpuThreads) {
+                            "CPU worker threads: Auto"
+                        } else {
+                            "CPU worker threads: $cpuThreads of ${capabilities.cpuCores}"
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    FilterChip(
+                        selected = autoCpuThreads,
+                        onClick = { onAutoCpuThreads(!autoCpuThreads) },
+                        enabled = enabled,
+                        label = { Text("Auto") },
+                    )
+                }
+                if (autoCpuThreads) {
+                    Text(
+                        text = "Auto starts at ${minOf(4, capabilities.cpuCores)} threads and adjusts during live playback to keep about 5 seconds buffered.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else if (capabilities.cpuCores > 1) {
+                    Slider(
+                        value = cpuThreads.toFloat(),
+                        onValueChange = { onCpuThreads(it.roundToInt()) },
+                        valueRange = 1f..capabilities.cpuCores.toFloat(),
+                        steps = (capabilities.cpuCores - 2).coerceAtLeast(0),
+                        enabled = enabled,
+                    )
+                    Text(
+                        text = "More threads use more CPU capacity; fewer threads leave more headroom for playback and the rest of the device.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        text = "This device reports one CPU core.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
 
             if (selectedBackend == ComputeBackend.SNAPDRAGON_NNAPI) {
@@ -503,6 +535,7 @@ private fun StatsCard(
 ) {
     val active = state.effectiveBackend ?: state.backend
     val gpuPeak = state.gpuHistory.maxOrNull()?.roundToInt()
+    val workerThreads = state.workerThreads.takeIf { it > 0 }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -523,7 +556,14 @@ private fun StatsCard(
             MetricRow(
                 label = "CPU",
                 value = state.cpuUsagePercent?.let { "${it.roundToInt()}%" } ?: "—",
-                detail = "${state.workerThreads.takeIf { it > 0 } ?: state.cpuThreads} of ${capabilities.cpuCores} worker threads",
+                detail = when {
+                    state.autoCpuThreads && workerThreads != null ->
+                        "Auto · $workerThreads of ${capabilities.cpuCores} worker threads"
+                    state.autoCpuThreads -> "Auto · selects threads while running"
+                    workerThreads != null ->
+                        "$workerThreads of ${capabilities.cpuCores} worker threads"
+                    else -> "${state.cpuThreads} of ${capabilities.cpuCores} worker threads"
+                },
                 chartValues = state.cpuHistory,
                 chartColor = MaterialTheme.colorScheme.primary,
                 chartMax = 100f,
@@ -574,6 +614,20 @@ private fun StatsCard(
                 chartValues = state.inferenceHistory,
                 chartColor = MaterialTheme.colorScheme.tertiary,
                 onClick = { onMetricClick(StatMetric.INFERENCE) },
+            )
+            MetricRow(
+                label = "Power",
+                value = state.powerWatts?.let(::formatWatts) ?: "—",
+                detail = "Battery current × voltage",
+            )
+            MetricRow(
+                label = "Energy",
+                value = if (state.batteryCharging) {
+                    "charging"
+                } else {
+                    state.energyMilliAmpHours?.let(::formatEnergy) ?: "—"
+                },
+                detail = "Consumed by the device during this run",
             )
             Text(
                 text = "Tap a metric for a larger chart and run summary. CPU is process share; GPU sysfs is best-effort.",
@@ -760,6 +814,7 @@ private fun MetricDetails(
         maxValue = maxValue,
         unit = metric.unit,
         color = color,
+        showPoints = metric == StatMetric.INFERENCE,
     )
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -794,6 +849,7 @@ private fun MetricChart(
     maxValue: Float,
     unit: String,
     color: Color,
+    showPoints: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
@@ -841,18 +897,21 @@ private fun MetricChart(
                         listOf(color.copy(alpha = 0.28f), Color.Transparent),
                     ),
                 )
-                if (values.size == 1) {
-                    drawCircle(
-                        color = color,
-                        radius = 4.dp.toPx(),
-                        center = Offset(x(0), y(values[0])),
-                    )
-                } else {
+                if (values.size > 1) {
                     drawPath(
                         path = line,
                         color = color,
                         style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
                     )
+                }
+                if (showPoints || values.size == 1) {
+                    values.forEachIndexed { index, value ->
+                        drawCircle(
+                            color = color,
+                            radius = 3.dp.toPx(),
+                            center = Offset(x(index), y(value)),
+                        )
+                    }
                 }
             }
         }
@@ -962,6 +1021,10 @@ private fun StatMetric.currentValue(state: UiState): String = when (this) {
 
 private fun UiState.activeBackend(): ComputeBackend = effectiveBackend ?: backend
 
+private fun formatWatts(value: Float): String = String.format(Locale.US, "%.2f W", value)
+
+private fun formatEnergy(value: Float): String = String.format(Locale.US, "%.1f mAh", value)
+
 private fun formatMetric(value: Float, unit: String): String = when (unit) {
     "%" -> "${value.roundToInt()}%"
     "ms" -> "${value.roundToInt()} ms"
@@ -983,7 +1046,29 @@ private fun LivePreviewCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Live ${modeLabel(state.liveMode).lowercase()}", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Live ${modeLabel(state.liveMode).lowercase()}",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                IconButton(onClick = onToggle) {
+                    Icon(
+                        imageVector = if (state.livePreviewPlaying) Icons.Default.Pause
+                        else Icons.Default.PlayArrow,
+                        contentDescription = if (state.livePreviewPlaying) {
+                            "Pause live vocals"
+                        } else {
+                            "Play live vocals"
+                        },
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
+            }
             Text(
                 text = "${formatTime(position, state.liveSampleRate)} / ${formatTime(total, state.liveSampleRate)} · buffered ${formatTime(state.liveAvailableFrames, state.liveSampleRate)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1002,30 +1087,14 @@ private fun LivePreviewCard(
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                IconButton(onClick = onToggle) {
-                    Icon(
-                        imageVector = if (state.livePreviewPlaying) Icons.Default.Pause
-                        else Icons.Default.PlayArrow,
-                        contentDescription = if (state.livePreviewPlaying) {
-                            "Pause live vocals"
-                        } else {
-                            "Play live vocals"
-                        },
-                        modifier = Modifier.size(36.dp),
-                    )
-                }
-                Text("Play while the model works")
-            }
-            Text("Mode", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StemMode.values().forEach { mode ->
                     FilterChip(
                         selected = state.liveMode == mode,
                         onClick = { onMode(mode) },
                         label = { Text(modeLabel(mode)) },
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
@@ -1097,17 +1166,33 @@ private fun PlayerCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = sourceName,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = "Engine: ${(state.effectiveBackend ?: state.backend).displayName}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = sourceName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "Engine: ${(state.effectiveBackend ?: state.backend).displayName}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                IconButton(onClick = viewModel::togglePlay) {
+                    Icon(
+                        imageVector = if (state.isPlaying) Icons.Default.Pause
+                        else Icons.Default.PlayArrow,
+                        contentDescription = if (state.isPlaying) "Pause" else "Play",
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
+            }
             Text(
                 text = "${formatTime(position, sampleRate)} / ${formatTime(duration, sampleRate)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1119,27 +1204,14 @@ private fun PlayerCard(
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                IconButton(onClick = viewModel::togglePlay) {
-                    Icon(
-                        imageVector = if (state.isPlaying) Icons.Default.Pause
-                        else Icons.Default.PlayArrow,
-                        contentDescription = if (state.isPlaying) "Pause" else "Play",
-                        modifier = Modifier.size(36.dp),
-                    )
-                }
-                Text(if (state.isPlaying) "Playing" else "Paused")
-            }
-
-            Text("Mode", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StemMode.values().forEach { mode ->
                     FilterChip(
                         selected = state.mode == mode,
                         onClick = { viewModel.setMode(mode) },
                         label = { Text(modeLabel(mode)) },
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }

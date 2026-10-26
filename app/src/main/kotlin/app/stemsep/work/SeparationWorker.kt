@@ -8,12 +8,15 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import app.stemsep.AppVisibilityTracker
+import app.stemsep.LivePlaybackTracker
 import app.stemsep.MainActivity
 import app.stemsep.R
 import app.stemsep.StemSepApp
@@ -24,6 +27,11 @@ import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
 import app.stemsep.separation.SeparationProgress
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class SeparationWorker(
     appContext: Context,
@@ -34,24 +42,27 @@ class SeparationWorker(
             ?: return Result.failure(workDataOf(KEY_ERROR to "Missing input URI"))
         val model = ModelCatalog.byId(inputData.getString(KEY_MODEL_ID))
         val backend = ComputeBackend.fromId(inputData.getString(KEY_BACKEND))
-        val cpuThreads = inputData.getInt(KEY_CPU_THREADS, 4).coerceAtLeast(1)
+        val cpuThreads = inputData.getInt(KEY_CPU_THREADS, 4).coerceAtLeast(0)
         val acceleratorMode = AcceleratorMode.fromId(
             inputData.getString(KEY_ACCELERATOR_MODE),
         )
         val pipeline = (applicationContext as StemSepApp).container.pipeline
 
+        LivePlaybackTracker.reset()
         createChannel()
-        setForeground(foregroundInfo(0f, SeparationPhase.HASHING))
+        val latestProgress = AtomicReference(
+            SeparationProgress(SeparationPhase.HASHING, 0f),
+        )
+        val foregroundStarted = AtomicBoolean(false)
 
         var lastPhase: SeparationPhase? = null
         var lastPercent = -1
-        var latestProgress = SeparationProgress(SeparationPhase.HASHING, 0f)
         var latestPreview: LiveStemPreview? = null
         var effectiveBackend: ComputeBackend? = null
         var fallbackReason: String? = null
 
         fun publish(progress: SeparationProgress, preview: LiveStemPreview?) {
-            latestProgress = progress
+            latestProgress.set(progress)
             progress.effectiveBackend?.let { effectiveBackend = it }
             progress.fallbackReason?.let { fallbackReason = it }
             if (preview != null) latestPreview = preview
@@ -76,32 +87,52 @@ class SeparationWorker(
             if (progress.phase != lastPhase || percent != lastPercent) {
                 lastPhase = progress.phase
                 lastPercent = percent
-                notifyProgress(progress.fraction, progress.phase)
+                if (foregroundStarted.get()) {
+                    notifyProgress(progress.fraction, progress.phase)
+                }
             }
         }
 
-        return try {
-            val result = pipeline.separate(
-                uri = Uri.parse(uriString),
-                model = model,
-                backend = backend,
-                cpuThreads = cpuThreads,
-                acceleratorMode = acceleratorMode,
-                onProgress = { progress ->
-                    publish(progress, latestPreview)
-                },
-                onPreview = { preview ->
-                    publish(latestProgress, preview)
-                },
-                isCancelled = { isStopped },
-            )
-            Result.success(workDataOf(KEY_CACHE_KEY to result.stems.key))
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: InterruptedException) {
-            if (isStopped) Result.failure() else Result.failure(errorData(error))
-        } catch (error: Exception) {
-            Result.failure(errorData(error))
+        return coroutineScope {
+            val foregroundJob = launch {
+                if (AppVisibilityTracker.foreground.value) {
+                    AppVisibilityTracker.foreground.first { !it }
+                }
+                runCatching {
+                    val current = latestProgress.get()
+                    setForeground(foregroundInfo(current.fraction, current.phase))
+                    foregroundStarted.set(true)
+                    notifyProgress(current.fraction, current.phase)
+                }.onFailure { error ->
+                    Log.w(TAG, "Could not start foreground notification", error)
+                }
+            }
+            try {
+                val result = pipeline.separate(
+                    uri = Uri.parse(uriString),
+                    model = model,
+                    backend = backend,
+                    cpuThreads = cpuThreads,
+                    acceleratorMode = acceleratorMode,
+                    playbackLeadSeconds = { LivePlaybackTracker.bufferSeconds() },
+                    onProgress = { progress ->
+                        publish(progress, latestPreview)
+                    },
+                    onPreview = { preview ->
+                        publish(latestProgress.get(), preview)
+                    },
+                    isCancelled = { isStopped },
+                )
+                Result.success(workDataOf(KEY_CACHE_KEY to result.stems.key))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: InterruptedException) {
+                if (isStopped) Result.failure() else Result.failure(errorData(error))
+            } catch (error: Exception) {
+                Result.failure(errorData(error))
+            } finally {
+                foregroundJob.cancel()
+            }
         }
     }
 
@@ -133,7 +164,7 @@ class SeparationWorker(
             .setContentIntent(contentIntent())
             .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setProgress(100, (fraction.coerceIn(0f, 1f) * 100).toInt(), false)
             .build()
@@ -166,10 +197,11 @@ class SeparationWorker(
 
     private fun createChannel() {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
         val channel = NotificationChannel(
             CHANNEL_ID,
             applicationContext.getString(R.string.notification_channel_separation),
-            NotificationManager.IMPORTANCE_LOW,
+            NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
             description = applicationContext.getString(
                 R.string.notification_channel_separation_description,
@@ -203,6 +235,8 @@ class SeparationWorker(
         const val WORK_NAME = "stemsep-separation"
         const val WORK_TAG = "stemsep-separation"
         const val NOTIFICATION_ID = 4101
-        const val CHANNEL_ID = "stemsep-separation"
+        const val CHANNEL_ID = "stemsep-separation-v2"
+        const val LEGACY_CHANNEL_ID = "stemsep-separation"
+        const val TAG = "StemSepWorker"
     }
 }

@@ -58,6 +58,7 @@ Important files:
 - `separation/src/main/kotlin/app/stemsep/separation/ModelCatalog.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/ComputeBackend.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/OnnxMdxEngine.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/AutoThreadController.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/SeparationPipeline.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemCache.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemExporter.kt`
@@ -66,6 +67,8 @@ Important files:
 - `separation/src/main/kotlin/app/stemsep/separation/LiveStemPreview.kt`
 - `app/src/main/kotlin/app/stemsep/ui/MainViewModel.kt`
 - `app/src/main/kotlin/app/stemsep/ui/ComputeStatsSampler.kt`
+- `app/src/main/kotlin/app/stemsep/LivePlaybackTracker.kt`
+- `app/src/main/kotlin/app/stemsep/AppVisibilityTracker.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepRoot.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
@@ -135,10 +138,10 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 
 ## Compute backends
 
-- CPU: ONNX Runtime CPU EP with a user-selectable intra-op thread count (default 4, capped at reported cores) and one inter-op thread. This is the default and the existing benchmark path.
+- CPU: ONNX Runtime CPU EP with a user-selectable intra-op thread count (Auto or 1..reported cores) and one inter-op thread. Auto starts at four threads (capped at reported cores) and adjusts at chunk boundaries while live playback is active, targeting at least five seconds of buffered audio. This is the default and the existing benchmark path.
 - Snapdragon GPU/NPU: Android NNAPI EP, gated by Qualcomm Snapdragon + `arm64-v8a` + API 27+. It requests FP16; the Android/Qualcomm driver decides whether GPU, NPU or CPU handles each node.
 - NNAPI Balanced mode retries on CPU if session creation fails. Accelerator-only mode adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
-- Compute stats show process CPU share, average inference time and best-effort GPU sysfs values as rolling sparklines; tapping a metric opens a detail bottom sheet. Android does not expose reliable GPU/NPU utilization or core counts.
+- Compute stats show process CPU share, average inference time, best-effort GPU sysfs values, battery power and run energy as rolling values; CPU/GPU/inference have sparklines and tapping a metric opens a detail bottom sheet. GPU counter sysfs values are sampled as deltas between readings, not cumulative averages. Android does not expose reliable GPU/NPU utilization or core counts.
 - QNN HTP is not enabled. The current model is float32; QNN HTP requires a quantized model and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
 - See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or cache keys.
 
@@ -149,16 +152,18 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - WorkManager uses unique work `stemsep-separation`.
 - The worker is a `CoroutineWorker`; `getForegroundInfo()` is `suspend`.
 - The foreground service type is `dataSync`; manifest permissions must stay consistent.
+- The foreground notification is intentionally delayed until `AppVisibilityTracker` reports that the Activity is no longer started. The notification channel is `stemsep-separation-v2` at `IMPORTANCE_DEFAULT` (not silent). WorkManager's normal-work 10-minute limit remains a risk if the app stays visible for a very long separation.
 - Source audio and export tree use SAF; do not replace with broad storage permissions.
 - The live and final stem players must be released when the source/model/backend changes, on job success/failure/cancel, and in `MainViewModel.onCleared()`.
 - Live preview reads the worker's growing temporary stem files; it must not read a partial file after the work directory is deleted.
 - Keep model inference on `Dispatchers.IO` or a worker, never on the main thread.
 - GPU and NPU are not separate options: NNAPI delegates to the Qualcomm driver. Show requested/effective backend and fallback reason; do not claim a specific NPU/GPU placement.
-- CPU thread count is a real setting (1..reported cores). GPU/NPU core count is not controllable through NNAPI; the Accelerator-only policy only disables CPU fallback.
-- Compute stats sampling must stay off the main thread. Do not present sysfs GPU values as guaranteed.
+- CPU thread count is a real setting (Auto or 1..reported cores). Auto is sent to the worker as `cpu_threads = 0`; `AutoThreadController` owns the dynamic policy and `OnnxMdxEngine.setThreads` recreates the CPU session at chunk boundaries. GPU/NPU core count is not controllable through NNAPI; the Accelerator-only policy only disables CPU fallback and hides the CPU thread control.
+- Compute stats sampling must stay off the main thread. Do not present sysfs GPU values as guaranteed; counter paths must be differenced between samples. Battery power/energy are device-dependent and may show unavailable.
 - The app uses the AndroidX splash screen, then a Compose X-style launch zoom (icon scales beyond the screen and fades to reveal the UI); keep the post-splash theme pointing at `Theme.StemSep`.
 - Theme preferences are stored in `stemsep-settings`; Material You uses dynamic colors on API 31+ and falls back to Violet below that.
-- The main/settings screen crossfade and the stats detail sheet use Compose Material 3; keep the bottom sheet swipe-dismissible.
+- The main/settings screen crossfade and the stats detail sheet use Compose Material 3; keep the bottom sheet swipe-dismissible. The system back button on Settings must return to the main screen via `BackHandler`.
+- Live and final playback controls belong in the card header's top-right; the three stem-mode chips fill the row and have no separate "Mode" label. The inference detail chart draws a dot for every sample.
 
 ## Release process
 

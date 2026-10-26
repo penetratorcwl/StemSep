@@ -20,9 +20,9 @@ The short AI onboarding file is [`../AGENTS.md`](../AGENTS.md).
 - Debug APK: <https://github.com/penetratorcwl/StemSep/releases/latest/download/StemSep-debug.apk>
 - Latest debug build release: <https://github.com/penetratorcwl/StemSep/releases/tag/latest>
 - Model weights are never committed to the repository; they are downloaded and SHA-256 verified on first use.
-- Default inference is the ONNX Runtime CPU EP with configurable worker threads; Snapdragon GPU/NPU via NNAPI is experimental.
+- Default inference is the ONNX Runtime CPU EP with Auto or manual worker threads; Snapdragon GPU/NPU via NNAPI is experimental.
 - The app exposes growing separated stems as a live preview (vocals by default) while separation runs, then switches to the committed stems.
-- The Compute card exposes CPU thread count and an inline NNAPI CPU-fallback switch. The stats card shows CPU/GPU/inference sparklines and a swipe-dismiss detail sheet. GPU/NPU utilization and core counts are not publicly exposed by Android. Settings provides System/Light/Dark modes and Material You/Violet/Teal/Graphite palettes.
+- The Compute card exposes Auto/manual CPU thread count and an inline NNAPI CPU-fallback switch. The stats card shows CPU/GPU/inference sparklines, battery power/energy and a swipe-dismiss detail sheet. GPU/NPU utilization and core counts are not publicly exposed by Android. Settings provides System/Light/Dark modes and Material You/Violet/Teal/Graphite palettes. The separation notification is normal importance and appears only after the app leaves the foreground.
 - Release APKs use a stable CI signing key. One uninstall is required when moving from a pre-stable-key build.
 
 ## Product boundary

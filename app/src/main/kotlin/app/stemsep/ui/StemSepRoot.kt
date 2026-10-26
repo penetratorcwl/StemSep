@@ -1,5 +1,6 @@
 package app.stemsep.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -33,6 +34,8 @@ fun StemSepRoot(
 ) {
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showLaunch by rememberSaveable { mutableStateOf(true) }
+
+    BackHandler(enabled = showSettings) { showSettings = false }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Crossfade(

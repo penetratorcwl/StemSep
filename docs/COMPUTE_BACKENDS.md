@@ -9,9 +9,11 @@ StemSep runs the MDX model inside the WorkManager foreground worker, never on th
 | CPU | ONNX Runtime CPU EP | Any supported ABI | Default, tested |
 | Snapdragon GPU/NPU | Android NNAPI EP | Qualcomm Snapdragon, `arm64-v8a`, API 27+ | Experimental |
 
-CPU inference uses a user-selectable number of intra-op threads, from 1 to the number of CPUs reported by the device. The default is four threads, capped at the reported core count. Inter-op threads remain fixed at one. The existing speed measurements used four threads: about 1.8 s per 5.92 s chunk for `mdx-9482` on the test phone.
+CPU inference uses a user-selectable number of intra-op threads, from 1 to the number of CPUs reported by the device, or **Auto**. Auto starts at four threads (capped at the reported core count) and can change the session's intra-op count at chunk boundaries. Inter-op threads remain fixed at one. The existing speed measurements used four threads: about 1.8 s per 5.92 s chunk for `mdx-9482` on the test phone.
 
-The worker thread count is persisted in app preferences and sent to the worker as `cpu_threads`. It changes CPU parallelism, not the separation result.
+Auto uses `LivePlaybackTracker` to read the live playback position and buffered frame count. `AutoThreadController` targets at least five seconds of audio ahead of playback, jumps to the core limit below two seconds, and reduces threads again after the buffer exceeds eight seconds. Changes are rate-limited and only happen between chunks. `OnnxMdxEngine.setThreads` creates a replacement CPU session and keeps the old one if creation fails. Auto has no effect when NNAPI is the active backend because NNAPI uses one intra-op thread.
+
+The worker thread count is persisted in app preferences and sent to the worker as `cpu_threads`. Auto is sent as `0`; manual values are 1..reported cores. It changes CPU parallelism, not the separation result.
 
 ## Snapdragon detection
 
@@ -60,7 +62,7 @@ If ORT falls back per operation inside a successful NNAPI session, the active ba
 
 The Compute card exposes:
 
-- **CPU worker threads** — 1 to `Runtime.availableProcessors()`, persisted across launches;
+- **CPU worker threads** — Auto or 1 to `Runtime.availableProcessors()`, persisted across launches. The control is hidden when NNAPI is selected with CPU fallback disabled because NNAPI does not use the CPU thread setting;
 - **Allow CPU fallback** — an inline switch mapping to Balanced or Accelerator only, persisted across launches;
 - **Requested / Active / Fallback** status.
 
@@ -69,10 +71,12 @@ The Compute stats card shows:
 - **CPU** — this process's share of total CPU capacity, derived from `Process.getElapsedCpuTime()` over wall time and divided by the reported core count. It is not a per-core utilization graph.
 - **Worker threads** — the effective inference thread count. NNAPI uses one intra-op thread; CPU uses the selected count.
 - **Inference** — average milliseconds per completed chunk and the number of chunks.
-- **GPU** — best-effort busy percentage from Qualcomm sysfs paths such as `gpu_busy_percentage`, `gpubusy` or `devfreq/gpu_load` when readable, otherwise `driver-managed`.
+- **GPU** — best-effort busy percentage from Qualcomm sysfs paths such as `gpu_busy_percentage`, `gpubusy` or `devfreq/gpu_load` when readable, otherwise `driver-managed`. Counter files such as `gpubusy` are differenced between samples; reading the cumulative ratio directly would report a lifetime average.
 - **NPU** — `driver-managed` when NNAPI is active, otherwise `off`. Android does not expose a public NPU utilization counter.
+- **Power** — battery current from `BATTERY_PROPERTY_CURRENT_NOW` multiplied by the sticky battery voltage; shown in watts.
+- **Energy** — charge-counter delta since the run started, or an integrated current fallback, shown in mAh. Values are hidden or marked charging when the device does not report usable data.
 
-CPU, GPU and inference rows keep a short rolling history and show a mini sparkline next to the value. Tapping a row opens a full-height bottom sheet with a larger chart, current/average/peak values, and swipe-down dismissal. The sampler runs every 750 ms off the main thread and keeps 90 points (about one minute for CPU/GPU; inference adds one point per completed chunk). NPU has no chart because there is no public utilization counter.
+CPU, GPU and inference rows keep a short rolling history and show a mini sparkline next to the value. Tapping a row opens a full-height bottom sheet with a larger chart, current/average/peak values, and swipe-down dismissal; the inference chart draws a dot for every sample. Power and energy are shown as current values without charts. The sampler runs every 750 ms off the main thread and keeps 90 points (about one minute for CPU/GPU; inference adds one point per completed chunk). NPU has no chart because there is no public utilization counter.
 
 GPU/NPU utilization and core counts are not available through a stable Android API. Do not present the sysfs value as guaranteed; SELinux or a different driver may hide it. A low GPU reading can mean NNAPI placed the work on the CPU or NPU, or that the driver does not expose a useful busy counter.
 
@@ -119,5 +123,5 @@ The app logs `Falling back to CPU ...` when NNAPI session creation fails. The UI
 - Backend detection and ID parsing have JVM unit tests.
 - Requested/effective/fallback metadata and the compute UI compile in CI. Stable signing was verified in run `40400420284`; the compute/settings/UI build passed in run `40400848607`; the chart/theme/settings build passed in run `40406906028`.
 - The NNAPI path has not yet been run on a physical Snapdragon device.
-- GPU/NPU statistics have not been validated on a physical device; sysfs availability is device-specific.
+- GPU/NPU statistics have not been validated on a physical device; sysfs availability and battery current/charge-counter support are device-specific.
 - The existing NNAPI benchmark on the test phone was slower than CPU; the option is experimental until re-measured with the current pipeline.

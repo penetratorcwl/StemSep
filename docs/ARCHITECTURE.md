@@ -25,9 +25,10 @@
 - `ModelDownloader` downloads with a fallback URL, verifies byte length and SHA-256, and writes atomically.
 - `AudioDecoder` uses `MediaExtractor` + `MediaCodec` and emits interleaved stereo float PCM at 44.1 kHz.
 - `ComputeBackend` and `ComputeCapabilityDetector` model CPU vs Snapdragon NNAPI support.
-- `OnnxMdxEngine` owns an ONNX Runtime session, selects the execution provider, applies the CPU thread count and NNAPI accelerator policy, exposes an `MdxInference` callback, and records inference timing.
+- `OnnxMdxEngine` owns an ONNX Runtime session, selects the execution provider, applies the CPU thread count and NNAPI accelerator policy, exposes an `MdxInference` callback, records inference timing, and can recreate the CPU session at chunk boundaries when Auto changes the thread count.
+- `AutoThreadController` implements the Auto thread policy from the live playback lead.
 - `StemCache` owns the on-disk stem cache and metadata, including requested/effective backends, fallback reason, CPU thread count and accelerator mode.
-- `SeparationPipeline` orchestrates hash -> cache lookup -> model -> decode -> inference -> commit, publishes growing stem files for live preview, and forwards inference statistics.
+- `SeparationPipeline` orchestrates hash -> cache lookup -> model -> decode -> inference -> commit, publishes growing stem files for live preview, forwards inference statistics, and applies Auto thread changes between chunks.
 - `StemExporter` writes WAV or FLAC through the Storage Access Framework.
 - `StemPlayer` mixes two committed stem files into one `AudioTrack` and supports seek/mode/gain.
 - `LiveStemPlayer` reads growing temporary stem files while separation is running.
@@ -37,10 +38,11 @@
 
 - `StemSepApp` creates the singleton `AppContainer`.
 - `AppContainer` owns `StemCache`, `SeparationPipeline` and `StemExporter`.
-- `MainActivity` installs the AndroidX splash screen, hosts Compose, applies the selected theme and requests `POST_NOTIFICATIONS` on API 33+.
-- `MainViewModel` exposes `UiState` and `AppSettings`, persists compute and theme settings, observes WorkManager, keeps rolling CPU/GPU/inference histories, owns the live/final players and export coroutine.
-- `ComputeStatsSampler` samples process CPU usage and best-effort Qualcomm GPU sysfs values off the main thread.
-- `SeparationWorker` is a `CoroutineWorker` with a data-sync foreground notification; it forwards live-preview metadata, backend status and inference statistics through WorkManager progress.
+- `MainActivity` installs the AndroidX splash screen, hosts Compose, applies the selected theme, requests `POST_NOTIFICATIONS` on API 33+, and updates `AppVisibilityTracker` in `onStart`/`onStop`.
+- `MainViewModel` exposes `UiState` and `AppSettings`, persists compute and theme settings, observes WorkManager, keeps rolling CPU/GPU/inference histories plus power/energy, owns the live/final players and export coroutine, and updates `LivePlaybackTracker` from the live player.
+- `LivePlaybackTracker` exposes the current live playback position, buffered frames and sample rate to the worker for Auto thread control.
+- `ComputeStatsSampler` samples process CPU usage, interval GPU sysfs values, battery power and run energy off the main thread.
+- `SeparationWorker` is a `CoroutineWorker`; it forwards live-preview metadata, backend status and inference statistics through WorkManager progress, and promotes itself to a data-sync foreground worker only after the app leaves the foreground. The notification channel is normal importance, not silent.
 - `StemSepRoot` hosts the main screen/settings crossfade and the X-style launch zoom overlay.
 - `StemSepScreen` is the Material 3 main UI: source, model, compute settings, stats with sparklines and a detail bottom sheet, progress, live stem preview, final stem player and export.
 - `SettingsScreen` selects System/Light/Dark mode and Material You/Violet/Teal/Graphite palettes; preferences are stored in `stemsep-settings`.
@@ -49,7 +51,7 @@
 
 1. The user selects an audio document with `ActivityResultContracts.OpenDocument`.
 2. The URI permission is persisted for reading. A unique WorkManager job is enqueued.
-3. `SeparationWorker` promotes itself to a foreground worker, reads the requested `ComputeBackend`, CPU thread count and accelerator policy, and calls `SeparationPipeline`.
+3. `SeparationWorker` reads the requested `ComputeBackend`, CPU thread setting (`0` means Auto) and accelerator policy, and calls `SeparationPipeline`. It waits until `AppVisibilityTracker` reports that the app is in the background before calling `setForeground`.
 4. The pipeline streams the source through SHA-256. The cache key is:
 
    ```text
@@ -62,7 +64,7 @@
 8. `MdxStreamingSeparator` runs the ONNX model over 261,120-sample chunks and writes:
    - `vocals.f32`
    - `instrumental.f32`
-9. After each flushed chunk, the pipeline publishes `LiveStemPreview` (temporary paths, available frames, total frames, sample rate) plus inference timing/thread statistics. The worker forwards them through WorkManager progress; `MainViewModel` opens `LiveStemPlayer` when the first frames are available.
+9. After each flushed chunk, the pipeline publishes `LiveStemPreview` (temporary paths, available frames, total frames, sample rate) plus inference timing/thread statistics. The worker forwards them through WorkManager progress; `MainViewModel` opens `LiveStemPlayer` when the first frames are available. While live playback is active, the pipeline reads `LivePlaybackTracker` at chunk boundaries and may recreate the CPU session with a different thread count to keep about five seconds buffered.
 10. `StemCache` writes metadata (`requestedBackend`, `effectiveBackend`, `fallbackReason`, `cpuThreads`, `acceleratorMode`) and atomically moves the temporary directory into the cache.
 11. The worker returns the cache key; `MainViewModel` releases the live player and opens the committed stems in `StemPlayer`.
 
@@ -87,12 +89,12 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 
 ## Compute backends
 
-- CPU is the default: ONNX Runtime CPU EP, one inter-op thread and a user-selectable intra-op thread count (default 4, capped at the reported core count).
+- CPU is the default: ONNX Runtime CPU EP, one inter-op thread and a user-selectable intra-op thread count (Auto or 1..reported cores). Auto starts at four threads and adjusts between chunks to keep about five seconds of live playback buffered.
 - `SNAPDRAGON_NNAPI` is offered only on Qualcomm Snapdragon, `arm64-v8a`, API 27+.
 - NNAPI requests FP16 and delegates operation placement to the Android/Qualcomm driver. The driver may use GPU, NPU or CPU per node.
 - The inline **Allow CPU fallback** switch maps to Balanced (on) or Accelerator-only (off). Balanced retries on CPU if NNAPI session creation fails; Accelerator-only adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU.
 - The Java API cannot report per-node fallback inside a successful NNAPI session.
-- The UI exposes CPU thread count and the NNAPI CPU-fallback switch. GPU/NPU core counts and reliable per-unit utilization are not available through NNAPI.
+- The UI exposes CPU thread count and the NNAPI CPU-fallback switch; the CPU thread control is hidden when NNAPI is selected with CPU fallback disabled. GPU/NPU core counts and reliable per-unit utilization are not available through NNAPI.
 - QNN HTP is not enabled because the current float32 model is not quantized; see [`COMPUTE_BACKENDS.md`](COMPUTE_BACKENDS.md).
 
 ## Cache invariants
@@ -110,6 +112,7 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 
 - While a job runs, `LiveStemPlayer` reads the growing temporary stems and starts in **Vocals** mode. It is released on job completion/failure/cancel before the committed cache entry is opened.
 - One `AudioTrack` in float PCM mode is shared by both stems in each player.
+- The live and final playback cards put play/pause in the top-right, omit the separate "Mode" label, and stretch the three mode chips across the row. The live player starts in Vocals.
 - The player reads fixed-size chunks and mixes according to `StemMode`:
   - `VOCALS`: vocals only.
   - `INSTRUMENTAL`: instrumental only.
@@ -141,14 +144,15 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - Every long loop calls `ensureActive()` and/or the injected `isCancelled` callback.
 - WorkManager cancellation maps to `isStopped`; the worker rethrows `CancellationException`.
 - The UI shows progress and phase strings from WorkManager progress data.
-- The notification is updated only when the phase or whole percentage changes.
-- CPU/GPU statistics are sampled every 750 ms on `Dispatchers.IO` while a job runs; the sampler never touches UI state from a background thread. The UI keeps 90 points for sparklines and the detail sheet.
+- The notification is updated only when the phase or whole percentage changes, and only after the foreground service has started. The foreground notification is delayed until the app leaves the foreground and uses `IMPORTANCE_DEFAULT` on `stemsep-separation-v2`.
+- CPU/GPU statistics and battery power/energy are sampled every 750 ms on `Dispatchers.IO` while a job runs; the sampler never touches UI state from a background thread. GPU counters are differenced between samples. The UI keeps 90 points for sparklines and the detail sheet.
 
 ## Important invariants for changes
 
 - Do not change STFT/chunk math without updating `MdxConfig` and running the DSP tests.
 - Keep the cache key tied to the source hash, model ID, backend, accelerator profile and separator version.
-- Keep CPU thread count out of the cache key; it changes performance, not audio.
+- Keep CPU thread count out of the cache key; it changes performance, not audio. Auto is the `cpu_threads = 0` sentinel and must not leak into cache identity.
+- Keep the foreground notification delayed until the app is backgrounded; the channel must stay normal importance.
 - Do not claim reliable GPU/NPU utilization or a GPU/NPU core count; NNAPI does not expose them.
 - Never commit `.onnx` files or model weights.
 - Keep model downloads on HTTPS and verify the pinned SHA-256.

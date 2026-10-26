@@ -18,28 +18,30 @@ data class InferenceStats(
 )
 
 class OnnxMdxEngine(
-    modelFile: File,
+    private val modelFile: File,
     threads: Int = 4,
     requestedBackend: ComputeBackend = ComputeBackend.CPU,
     val acceleratorMode: AcceleratorMode = AcceleratorMode.BALANCED,
 ) : Closeable {
     private val environment = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
+    private val sessionLock = Any()
+    private var session: OrtSession
     private val inputName: String
     private val outputName: String
-    private val requestedThreads = threads.coerceAtLeast(1)
+    private var currentThreads = threads.coerceAtLeast(1)
     private val statsLock = Any()
     private var inferenceChunks = 0
     private var inferenceNanos = 0L
     val activeBackend: ComputeBackend
-    val effectiveThreads: Int
+    var effectiveThreads: Int = 1
+        private set
     val fallbackReason: String?
 
     init {
         var effectiveBackend = requestedBackend
         var reason: String? = null
         session = try {
-            createSession(modelFile, requestedBackend, requestedThreads)
+            createSession(modelFile, requestedBackend, currentThreads)
         } catch (error: Exception) {
             if (
                 requestedBackend == ComputeBackend.CPU ||
@@ -51,11 +53,11 @@ class OnnxMdxEngine(
             effectiveBackend = ComputeBackend.CPU
             reason = error.message?.takeIf { it.isNotBlank() }
                 ?: error::class.java.simpleName
-            createSession(modelFile, ComputeBackend.CPU, requestedThreads)
+            createSession(modelFile, ComputeBackend.CPU, currentThreads)
         }
         activeBackend = effectiveBackend
         effectiveThreads = if (effectiveBackend == ComputeBackend.CPU) {
-            requestedThreads
+            currentThreads
         } else {
             1
         }
@@ -84,7 +86,9 @@ class OnnxMdxEngine(
         )
         OnnxTensor.createTensor(environment, FloatBuffer.wrap(input), shape).use { tensor ->
             val started = System.nanoTime()
-            val result = session.run(mapOf(inputName to tensor))
+            val result = synchronized(sessionLock) {
+                session.run(mapOf(inputName to tensor))
+            }
             val elapsed = System.nanoTime() - started
             synchronized(statsLock) {
                 inferenceChunks++
@@ -105,8 +109,31 @@ class OnnxMdxEngine(
         }
     }
 
+    fun setThreads(threads: Int): Int = synchronized(sessionLock) {
+        if (activeBackend != ComputeBackend.CPU) return effectiveThreads
+        val target = threads.coerceIn(
+            1,
+            Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
+        )
+        if (target == currentThreads) return effectiveThreads
+        val replacement = runCatching {
+            createSession(modelFile, ComputeBackend.CPU, target)
+        }.getOrElse { error ->
+            Log.w(TAG, "Could not change CPU threads to $target", error)
+            return effectiveThreads
+        }
+        val previous = session
+        session = replacement
+        currentThreads = target
+        effectiveThreads = target
+        runCatching { previous.close() }
+        target
+    }
+
     override fun close() {
-        session.close()
+        synchronized(sessionLock) {
+            session.close()
+        }
     }
 
     private fun createSession(

@@ -21,6 +21,18 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { }
 
+    override fun onStart() {
+        super.onStart()
+        AppVisibilityTracker.update(true)
+    }
+
+    override fun onStop() {
+        if (!isChangingConfigurations) {
+            AppVisibilityTracker.update(false)
+        }
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)

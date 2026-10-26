@@ -12,7 +12,7 @@ Last updated: 2026-10-26
 - Single-model catalog (`UVR_MDXNET_9482`) with a pinned size and SHA-256.
 - Download fallback for the default model.
 - Streaming hash, cache lookup, cache metadata and atomic commit.
-- WorkManager foreground separation job with progress, cancellation and error data.
+- WorkManager separation job with progress, cancellation and error data; the data-sync foreground notification starts only after the app leaves the foreground.
 - Compose Material 3 UI with System/Light/Dark modes and Material You, Violet, Teal and Graphite palettes.
 - SAF source picker and SAF export tree picker.
 - WAV and FLAC export.
@@ -21,9 +21,12 @@ Last updated: 2026-10-26
 - CPU and experimental Snapdragon GPU/NPU (NNAPI) backend selection with Snapdragon/arm64/API gate.
 - Backend-aware cache key and requested/effective-backend metadata with visible fallback reason.
 - Live progress publishes temporary stem paths, available/total frames, backend status and inference statistics through WorkManager.
-- Compute card with persisted CPU thread count (1..reported cores) and an inline NNAPI "Allow CPU fallback" switch.
-- Compute stats card with CPU/GPU/inference sparklines, NPU status and a swipe-dismiss detail bottom sheet with current/average/peak values.
-- Settings screen for theme mode and color palette, persisted across launches.
+- Compute card with persisted Auto/manual CPU thread count and an inline NNAPI "Allow CPU fallback" switch; the thread control is hidden in Accelerator-only mode.
+- Auto CPU thread policy: starts at four threads, reads live playback lead and adjusts the ONNX CPU session at chunk boundaries to keep about five seconds buffered.
+- Compute stats card with CPU/GPU/inference sparklines, NPU status, battery power/energy, and a swipe-dismiss detail bottom sheet with current/average/peak values. GPU counters are sampled as deltas.
+- Settings screen for theme mode and color palette, persisted across launches; system back returns to the main screen.
+- Live and final playback controls are in the card header; the mode chips fill the row, and inference detail points are drawn individually.
+- Background-only normal-importance separation notification on channel `stemsep-separation-v2`.
 - Splash screen plus an X-style launch zoom where the app icon scales beyond the screen and reveals the UI.
 - Stable CI signing key with `versionCode` derived from `github.run_number`.
 - GitHub Actions DSP tests, separation tests, APK build, signature verification and release publishing.
@@ -42,6 +45,7 @@ Last updated: 2026-10-26
 - Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom passed CI run `40406906028`; the APK verified with the stable certificate and the `latest` release asset is `137,451,530` bytes.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
 - Live-preview code compiles in CI; it has not been runtime-tested on a device yet.
+- Auto CPU thread control, power/energy, GPU delta sampling and delayed notifications are pending CI verification for this change.
 
 ## Not yet verified on a physical device
 
@@ -52,7 +56,9 @@ The Android runtime path still needs a real-device smoke test:
 - ONNX inference on the target CPU;
 - NNAPI GPU/NPU selection, FP16 output, Balanced fallback and Accelerator-only failure;
 - live vocal/instrumental/mix playback while separation runs;
-- compute settings persistence, CPU usage, GPU sysfs availability and inference timing;
+- Auto thread changes during live playback and their effect on the five-second buffer;
+- compute settings persistence, CPU usage, GPU sysfs availability, power/energy and inference timing;
+- notification timing: no notification while the app is visible, normal-importance notification after leaving, and WorkManager behavior for long jobs;
 - stats sparklines, detail bottom sheet, and swipe-down dismissal;
 - theme switching, Material You dynamic colors, and settings persistence;
 - splash handoff and X-style launch zoom timing;
@@ -73,10 +79,13 @@ The Android runtime path still needs a real-device smoke test:
 - The Snapdragon GPU/NPU path is experimental. NNAPI does not expose a GPU-only/NPU-only switch, and unsupported nodes may fall back to CPU in Balanced mode.
 - GPU/NPU utilization and core counts are not publicly exposed by Android. GPU sysfs sampling is best-effort; NPU utilization is unavailable.
 - CPU statistics are the process's share of total CPU capacity, not a per-core utilization graph.
+- Auto thread changes recreate the ONNX CPU session and can add a short pause at a chunk boundary.
+- Battery power and run energy depend on device support for current and charge counters; some phones report unavailable or coarse values.
 - Stats history is in memory only; it is not persisted across app restarts.
 - CPU thread count is not part of the cache key, so a cache hit does not rerun inference with new thread settings.
 - QNN HTP NPU is not enabled because the current float32 model would need quantization and calibration.
 - Live preview and final playback do not request audio focus yet.
+- The foreground notification is delayed until the app is backgrounded, so a separation that stays visible for more than WorkManager's normal-work limit may be stopped before a foreground service starts.
 - Live preview is tied to the Activity/ViewModel; if the process dies, it is lost even if the worker continues.
 - A NNAPI session that fell back to CPU is cached under the requested NNAPI key, so a later NNAPI run can hit that cached result without retrying the accelerator.
 - The current UI text is mostly English; the notification channel uses Polish strings.
@@ -87,12 +96,13 @@ The Android runtime path still needs a real-device smoke test:
 2. Run a short track through the default UVR_MDXNET_9482 model on CPU and verify the launch zoom, stats sparklines and detail sheet.
 3. Change CPU worker threads and verify the stats card, time and thermal behavior.
 4. Change theme mode and palette, then verify settings persistence and Material You colors.
-5. Run the same track with Snapdragon GPU/NPU Balanced; compare time, output quality and fallback behavior.
-6. Switch to Accelerator-only and verify that a failed NNAPI session produces an error instead of silently using CPU.
-7. Verify live vocal preview play/pause/seek during separation and the automatic switch to the committed stems.
-8. Verify the two exported files and check that vocals + instrumental reconstruct the source.
-9. Test a cache hit, a cancelled job, a backend switch and an accelerator-profile switch (cache key must change).
-10. Force an NNAPI fallback and verify the **Requested / Active / Fallback** text and cached metadata.
-11. Measure peak memory and runtime on a 3-5 minute track, including live preview and stats sampling while inference runs.
-12. Add a notification cancel action if cancellation from the shade is required.
-13. Evaluate QNN HTP with a quantized model before calling NPU support complete.
+5. Run the same track with Auto threads and live playback; verify the worker raises/lowers threads as the buffer crosses the five-second target.
+6. Run the same track with Snapdragon GPU/NPU Balanced; compare time, output quality and fallback behavior.
+7. Switch to Accelerator-only and verify that a failed NNAPI session produces an error instead of silently using CPU.
+8. Verify live vocal preview play/pause/seek during separation and the automatic switch to the committed stems.
+9. Verify the two exported files and check that vocals + instrumental reconstruct the source.
+10. Test a cache hit, a cancelled job, a backend switch and an accelerator-profile switch (cache key must change).
+11. Force an NNAPI fallback and verify the **Requested / Active / Fallback** text and cached metadata.
+12. Measure peak memory and runtime on a 3-5 minute track, including live preview and stats sampling while inference runs.
+13. Add a notification cancel action if cancellation from the shade is required.
+14. Evaluate QNN HTP with a quantized model before calling NPU support complete.

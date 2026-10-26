@@ -50,6 +50,7 @@ class SeparationPipeline(
         backend: ComputeBackend = ComputeBackend.CPU,
         cpuThreads: Int = 4,
         acceleratorMode: AcceleratorMode = AcceleratorMode.BALANCED,
+        playbackLeadSeconds: () -> Float? = { null },
         onProgress: (SeparationProgress) -> Unit = {},
         onPreview: (LiveStemPreview) -> Unit = {},
         isCancelled: () -> Boolean = { false },
@@ -98,6 +99,15 @@ class SeparationPipeline(
             var finalInferenceAverage = 0L
             var finalInferenceChunks = 0
             var finalWorkerThreads = 0
+            val threadLimit = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            val autoThreads = cpuThreads <= 0
+            val autoController = if (autoThreads) {
+                AutoThreadController(threadLimit)
+            } else {
+                null
+            }
+            val initialThreads = autoController?.threads
+                ?: cpuThreads.coerceIn(1, threadLimit)
             val vocalsFile = File(tempDirectory, StemCache.VOCALS_FILE)
             val instrumentalFile = File(tempDirectory, StemCache.INSTRUMENTAL_FILE)
             onPreview(
@@ -114,7 +124,7 @@ class SeparationPipeline(
                     FloatPcmFileWriter(instrumentalFile).use { instrumental ->
                         OnnxMdxEngine(
                             modelFile = modelFile,
-                            threads = cpuThreads,
+                            threads = initialThreads,
                             requestedBackend = backend,
                             acceleratorMode = acceleratorMode,
                         ).use { engine ->
@@ -150,6 +160,18 @@ class SeparationPipeline(
                                             sampleRate = decoded.sampleRate,
                                         ),
                                     )
+                                    if (
+                                        autoController != null &&
+                                        effectiveBackend == ComputeBackend.CPU
+                                    ) {
+                                        val desired = autoController.observe(
+                                            playbackLeadSeconds(),
+                                        )
+                                        if (desired != engine.effectiveThreads) {
+                                            engine.setThreads(desired)
+                                        }
+                                    }
+                                    finalWorkerThreads = engine.effectiveThreads
                                     val stats = engine.stats()
                                     finalInferenceAverage = stats.averageMillis
                                     finalInferenceChunks = stats.chunks

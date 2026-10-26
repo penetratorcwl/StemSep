@@ -13,6 +13,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import app.stemsep.LivePlaybackTracker
 import app.stemsep.StemSepApp
 import app.stemsep.dsp.StemMode
 import app.stemsep.separation.AcceleratorMode
@@ -50,6 +51,7 @@ data class UiState(
     val modelId: String = ModelCatalog.DEFAULT_MODEL_ID,
     val backend: ComputeBackend = ComputeBackend.CPU,
     val cpuThreads: Int = 4,
+    val autoCpuThreads: Boolean = true,
     val acceleratorMode: AcceleratorMode = AcceleratorMode.BALANCED,
     val effectiveBackend: ComputeBackend? = null,
     val fallbackReason: String? = null,
@@ -73,6 +75,9 @@ data class UiState(
     val liveVocalLevel: Float = 1f,
     val cpuUsagePercent: Float? = null,
     val gpuUsagePercent: Float? = null,
+    val powerWatts: Float? = null,
+    val energyMilliAmpHours: Float? = null,
+    val batteryCharging: Boolean = false,
     val cpuHistory: List<Float> = emptyList(),
     val gpuHistory: List<Float> = emptyList(),
     val inferenceHistory: List<Float> = emptyList(),
@@ -96,13 +101,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var selectedCpuThreads = prefs
         .getInt("cpu_threads", defaultCpuThreads)
         .coerceIn(1, capabilities.cpuCores)
+    private var autoCpuThreads = prefs.getBoolean("auto_cpu_threads", true)
     private var selectedAcceleratorMode = AcceleratorMode.fromId(
         prefs.getString("accelerator_mode", null),
     )
-    private val statsSampler = ComputeStatsSampler(capabilities.cpuCores)
+    private val statsSampler = ComputeStatsSampler(application, capabilities.cpuCores)
     private val _state = MutableStateFlow(
         UiState(
             cpuThreads = selectedCpuThreads,
+            autoCpuThreads = autoCpuThreads,
             acceleratorMode = selectedAcceleratorMode,
         ),
     )
@@ -135,12 +142,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopStatsSampler()
         releasePlayer()
         releaseLivePreview()
+        LivePlaybackTracker.reset()
         _state.value = UiState(
             selectedUri = uri,
             selectedName = displayName(uri),
             modelId = _state.value.modelId,
             backend = _state.value.backend,
             cpuThreads = _state.value.cpuThreads,
+            autoCpuThreads = _state.value.autoCpuThreads,
             acceleratorMode = _state.value.acceleratorMode,
             effectiveBackend = if (_state.value.backend == ComputeBackend.CPU) {
                 ComputeBackend.CPU
@@ -174,6 +183,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 message = null,
                 cpuUsagePercent = null,
                 gpuUsagePercent = null,
+                powerWatts = null,
+                energyMilliAmpHours = null,
+                batteryCharging = false,
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
@@ -209,6 +221,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 message = null,
                 cpuUsagePercent = null,
                 gpuUsagePercent = null,
+                powerWatts = null,
+                energyMilliAmpHours = null,
+                batteryCharging = false,
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
@@ -223,8 +238,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.running) return
         val value = threads.coerceIn(1, capabilities.cpuCores)
         selectedCpuThreads = value
-        prefs.edit().putInt("cpu_threads", value).apply()
-        _state.update { it.copy(cpuThreads = value) }
+        autoCpuThreads = false
+        prefs.edit()
+            .putInt("cpu_threads", value)
+            .putBoolean("auto_cpu_threads", false)
+            .apply()
+        _state.update { it.copy(cpuThreads = value, autoCpuThreads = false) }
+    }
+
+    fun setAutoCpuThreads(auto: Boolean) {
+        if (_state.value.running) return
+        autoCpuThreads = auto
+        prefs.edit().putBoolean("auto_cpu_threads", auto).apply()
+        _state.update { it.copy(autoCpuThreads = auto) }
     }
 
     fun setAcceleratorMode(mode: AcceleratorMode) {
@@ -252,6 +278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (current.running) return
         releasePlayer()
         releaseLivePreview()
+        LivePlaybackTracker.reset()
         observeJob?.cancel()
         val model = ModelCatalog.byId(current.modelId)
         val acceleratorMode = if (current.backend == ComputeBackend.CPU) {
@@ -265,7 +292,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     SeparationWorker.KEY_INPUT_URI to uri.toString(),
                     SeparationWorker.KEY_MODEL_ID to model.id,
                     SeparationWorker.KEY_BACKEND to current.backend.cacheId,
-                    SeparationWorker.KEY_CPU_THREADS to current.cpuThreads,
+                    SeparationWorker.KEY_CPU_THREADS to if (current.autoCpuThreads) {
+                        0
+                    } else {
+                        current.cpuThreads
+                    },
                     SeparationWorker.KEY_ACCELERATOR_MODE to acceleratorMode.cacheId,
                 ),
             )
@@ -292,6 +323,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fallbackReason = null,
                 cpuUsagePercent = null,
                 gpuUsagePercent = null,
+                powerWatts = null,
+                energyMilliAmpHours = null,
+                batteryCharging = false,
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
@@ -334,6 +368,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         livePositionFrames = currentPlayer.currentFrame(),
                     )
                 }
+                updateLivePlaybackTracker()
             } else {
                 if (_state.value.livePositionFrames >= _state.value.liveTotalFrames) {
                     currentPlayer.seekTo(0)
@@ -341,6 +376,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 currentPlayer.play()
                 _state.update { it.copy(livePreviewPlaying = true, error = null) }
+                updateLivePlaybackTracker()
             }
         }.onFailure { error ->
             _state.update {
@@ -364,6 +400,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 livePreviewPlaying = if (target >= total) false else it.livePreviewPlaying,
             )
         }
+        updateLivePlaybackTracker()
     }
 
     fun setLiveMode(mode: StemMode) {
@@ -586,10 +623,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     totalFrames = total,
                     sampleRate = sampleRate,
                 ) { frame ->
+                    val playing = livePlayer?.isPlaying() == true
+                    LivePlaybackTracker.update(
+                        positionFrames = frame,
+                        availableFrames = _state.value.liveAvailableFrames,
+                        sampleRate = _state.value.liveSampleRate,
+                        playing = playing,
+                    )
                     _state.update { state ->
                         state.copy(
                             livePositionFrames = frame,
-                            livePreviewPlaying = livePlayer?.isPlaying() == true,
+                            livePreviewPlaying = playing,
                         )
                     }
                 }
@@ -618,6 +662,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     liveVocalLevel = 1f,
                 )
             }
+            updateLivePlaybackTracker()
         } else {
             _state.update {
                 it.copy(
@@ -626,6 +671,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     liveSampleRate = sampleRate,
                 )
             }
+            updateLivePlaybackTracker()
         }
     }
 
@@ -682,6 +728,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         cpuUsagePercent = cpu ?: it.cpuUsagePercent,
                         gpuUsagePercent = gpu ?: it.gpuUsagePercent,
+                        powerWatts = sample.powerWatts,
+                        energyMilliAmpHours = sample.energyMilliAmpHours,
+                        batteryCharging = sample.charging,
                         cpuHistory = if (cpu != null) {
                             (it.cpuHistory + cpu).takeLast(MAX_STATS_HISTORY)
                         } else {
@@ -717,6 +766,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 liveSampleRate = 44_100,
             )
         }
+        LivePlaybackTracker.reset()
+    }
+
+    private fun updateLivePlaybackTracker() {
+        val current = _state.value
+        LivePlaybackTracker.update(
+            positionFrames = current.livePositionFrames,
+            availableFrames = current.liveAvailableFrames,
+            sampleRate = current.liveSampleRate,
+            playing = current.livePreviewPlaying,
+        )
     }
 
     private fun releasePlayer() {
