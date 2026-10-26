@@ -310,7 +310,7 @@ private fun LivePreviewCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Live separated vocals", style = MaterialTheme.typography.titleMedium)
+            Text("Live ${modeLabel(state.liveMode).lowercase()}", style = MaterialTheme.typography.titleMedium)
             Text(
                 text = "${formatTime(position, state.liveSampleRate)} / ${formatTime(total, state.liveSampleRate)} · buffered ${formatTime(state.liveAvailableFrames, state.liveSampleRate)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

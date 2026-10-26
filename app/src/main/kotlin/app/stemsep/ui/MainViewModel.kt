@@ -115,7 +115,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 durationFrames = 0,
                 positionFrames = 0,
                 isPlaying = false,
-                effectiveBackend = null,
+                effectiveBackend = if (it.backend == ComputeBackend.CPU) {
+                    ComputeBackend.CPU
+                } else {
+                    null
+                },
                 fallbackReason = null,
                 phase = null,
                 progress = 0f,

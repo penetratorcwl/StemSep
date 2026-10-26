@@ -178,8 +178,8 @@ The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not co
 
 - DSP: 7/7 local JUnit tests pass.
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
-- CI: DSP test, separation tests and debug APK build pass in run `40387537046`; the live-preview change is pending a new GitHub Actions run.
-- Release: latest debug APK is published on GitHub Releases.
+- CI: DSP test, separation tests and debug APK build pass in run `40396988552` for `b56c0ec`.
+- Release: latest debug APK is published on GitHub Releases; current asset is 137,347,470 bytes from `b56c0ec`.
 - Runtime on a physical phone: live preview, NNAPI and fallback are not yet verified on a device.
 - Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, debug signing only, cache in `cacheDir`.
 - Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.
