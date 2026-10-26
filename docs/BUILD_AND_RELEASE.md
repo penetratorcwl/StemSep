@@ -37,9 +37,9 @@ On every push to `master` or `main`, the build job also publishes the APK to a r
 - Release page: <https://github.com/penetratorcwl/StemSep/releases/tag/latest>
 - Direct APK: <https://github.com/penetratorcwl/StemSep/releases/latest/download/StemSep-debug.apk>
 
-The release asset is named `StemSep-debug.apk` so it can be downloaded without unpacking the Actions artifact ZIP. The release is updated with `gh release upload --clobber`.
+The repository is private, so open these links while signed in to the GitHub account that can access it. The release asset is named `StemSep-debug.apk` so it can be downloaded without unpacking the Actions artifact ZIP. The release is updated with `gh release upload --clobber`.
 
-The workflow grants the build job `contents: write` only for this release step. If the repository's Actions permissions are restricted to read-only, change the repository setting to allow GitHub Actions to create releases, or use a maintainer token with release permission.
+The build job has `contents: write` so the release step can create and update the release; the test job remains read-only. If the repository's Actions permissions are restricted to read-only, change the repository setting to allow GitHub Actions to create releases, or use a maintainer token with release permission.
 
 ### Manual release fallback
 

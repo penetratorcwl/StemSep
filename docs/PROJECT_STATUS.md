@@ -25,7 +25,7 @@ Last updated: 2026-10-26
 - `:core-dsp` compiles locally and passes 7/7 JUnit tests.
 - GitHub Actions `test` job passes.
 - GitHub Actions `build` job passes and produces a debug APK.
-- The release workflow is designed to attach `StemSep-debug.apk` to the `latest` release.
+- The release workflow attached `StemSep-debug.apk` to the `latest` release; the asset was downloaded and checked through `gh release download`.
 
 ## Not yet verified on a physical device
 
