@@ -4,7 +4,7 @@
 
 While a separation job is running, the UI can show a **Source preview** card. It uses a separate `MediaPlayer` instance over the original SAF URI, so the user can listen to the source while the model works.
 
-- The preview is prepared asynchronously after the WorkManager job is enqueued.
+- The preview is prepared asynchronously after the WorkManager job is enqueued; tap play in the **Source preview** card to start it.
 - Play/pause and seek are independent of the separation job.
 - The preview is released when the job succeeds, fails or is cancelled.
 - It is not a background playback service; it is tied to the Activity/ViewModel lifetime.

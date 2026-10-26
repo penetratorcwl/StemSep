@@ -64,6 +64,16 @@ The cache key now includes the backend:
 
 `SEPARATOR_VERSION` is `2`. Cache entries created before this change are ignored because the key and metadata format changed.
 
+## Device verification
+
+Use a release/debug build on the target phone and watch the backend log:
+
+```bash
+adb logcat -s StemSepOnnx
+```
+
+The app logs `Falling back to CPU ...` when NNAPI session creation fails. A successful NNAPI session does not prove that every node used the accelerator. Compare wall-clock time, output quality and battery/thermal behavior between CPU and Snapdragon modes.
+
 ## Verification status
 
 - Backend detection and ID parsing have JVM unit tests.

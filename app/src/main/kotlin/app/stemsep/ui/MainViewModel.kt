@@ -331,6 +331,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 running = false,
                                 progress = 1f,
                                 phase = SeparationPhase.FINALIZING.name,
+                                error = null,
                             )
                         }
                         val key = info.outputData.getString(SeparationWorker.KEY_CACHE_KEY)
