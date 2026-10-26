@@ -2,6 +2,8 @@
 
 The APK contains no model weights. Models are downloaded on first use, checked against a pinned byte length and SHA-256, and stored in the app cache.
 
+All models are float32 ONNX files. They run through ONNX Runtime on the CPU by default. The optional Snapdragon GPU/NPU path uses Android NNAPI and the same float model; it does not require a separate model file. The Qualcomm QNN HTP NPU path would require quantized models and is not enabled yet. See [`COMPUTE_BACKENDS.md`](COMPUTE_BACKENDS.md).
+
 ## Supported models
 
 | Catalog ID | UI label | Size | SHA-256 |
@@ -25,7 +27,7 @@ The APK contains no model weights. Models are downloaded on first use, checked a
 - `overlap`: 0.10
 - `sampleRate`: 44,100
 - `zeroLowBins`: true
-- Observed speed on the test phone: about 1.77-1.89 s per 5.92 s chunk, roughly 3.3x faster than realtime.
+- Observed CPU speed on the test phone: about 1.77-1.89 s per 5.92 s chunk, roughly 3.3x faster than realtime.
 
 ### `kim-vocal-2` (optional high quality)
 
@@ -43,7 +45,7 @@ The APK contains no model weights. Models are downloaded on first use, checked a
 - `overlap`: 0.10
 - `sampleRate`: 44,100
 - `zeroLowBins`: true
-- Observed speed on the test phone: about 7.4-7.8 s per chunk, potentially slower than realtime.
+- Observed CPU speed on the test phone: about 7.4-7.8 s per chunk, potentially slower than realtime.
 
 ## Evaluated but excluded
 
@@ -62,8 +64,8 @@ The APK contains no model weights. Models are downloaded on first use, checked a
 3. Add a `ModelSpec` to `separation/src/main/kotlin/app/stemsep/separation/ModelCatalog.kt`.
 4. Pin both the byte length and SHA-256. Do not trust the remote file name alone.
 5. Verify the model on a real track: stem lengths must equal the decoded frame count.
-6. Increase `ModelCatalog.SEPARATOR_VERSION` when the separation algorithm or config changes, so old cache entries are ignored.
-7. Run `./gradlew :core-dsp:test` and `./gradlew :app:assembleDebug` in CI.
+6. Increase `ModelCatalog.SEPARATOR_VERSION` when the separation algorithm, config, or cache-key semantics change, so old cache entries are ignored. It is currently `2` because the backend was added to the key.
+7. Run `./gradlew :core-dsp:test`, `./gradlew :separation:testDebugUnitTest`, and `./gradlew :app:assembleDebug` in CI.
 
 ## Licensing
 

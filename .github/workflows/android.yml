@@ -58,6 +58,9 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS"
 
+      - name: Run separation unit tests
+        run: ./gradlew --stacktrace :separation:testDebugUnitTest
+
       - name: Build
         run: ./gradlew --stacktrace :app:assembleDebug
 
@@ -77,7 +80,7 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)"
           test -n "$APK"
           cp "$APK" "$RUNNER_TEMP/StemSep-debug.apk"
-          NOTES="Automatic debug build from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Package: app.stemsep.debug. The first separation downloads the selected ONNX model."
+          NOTES="Automatic debug build from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Package: app.stemsep.debug. CPU inference is default; Snapdragon GPU/NPU via NNAPI is experimental. Source preview is available while separation runs. The first separation downloads the selected ONNX model."
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload latest "$RUNNER_TEMP/StemSep-debug.apk" \
               --repo "$GITHUB_REPOSITORY" --clobber

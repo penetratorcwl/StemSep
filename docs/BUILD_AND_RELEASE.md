@@ -10,6 +10,7 @@ Requirements:
 
 ```bash
 ./gradlew :core-dsp:test
+./gradlew :separation:testDebugUnitTest
 ./gradlew :app:assembleDebug
 ```
 
@@ -26,7 +27,7 @@ The repository is currently developed from Termux. A local Android SDK may not b
 Workflow: `.github/workflows/android.yml`
 
 - `test`: runs `:core-dsp:test` on JDK 17.
-- `build`: installs Android platform 36 and build-tools 35.0.0, runs `:app:assembleDebug`, and uploads the APK as the `stemsep-debug` artifact.
+- `build`: installs Android platform 36 and build-tools 35.0.0, runs `:separation:testDebugUnitTest`, builds `:app:assembleDebug`, and uploads the APK as the `stemsep-debug` artifact.
 
 Both jobs run on pushes and pull requests. The APK artifact is temporary and expires according to the repository's artifact retention setting.
 
@@ -67,4 +68,4 @@ The release currently contains a debug APK signed by the CI debug keystore. It i
 - Missing Android SDK: install platform 36 and build-tools 35.0.0.
 - Missing model at runtime: the first separation requires network access; check the download URL and the pinned SHA-256.
 - Release step fails: verify `permissions: contents: write` and the repository's Actions workflow permissions.
-- APK is very large: ONNX Runtime native libraries are bundled for multiple ABIs. This is expected for the current debug build.
+- APK is very large: ONNX Runtime native libraries are bundled for multiple ABIs. This is expected for the current debug build. The QNN runtime is not included yet; adding it would increase the APK substantially.

@@ -1,6 +1,6 @@
 # StemSep
 
-On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer.
+On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer. While separation runs, the original source can be previewed in the app.
 
 ## Download
 
@@ -27,13 +27,15 @@ Both use stereo 44.1 kHz, periodic Hann, `n_fft` 6144/7680, hop 1024, reflect pa
 ## Architecture
 
 - `:core-dsp` — pure JVM DSP: MDX STFT/iSTFT, streaming overlap-add, sinc resampler, WAV reader/writer, mixer. Unit tested locally and in CI.
-- `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference, cache, WAV/FLAC export.
-- `:app` — Compose UI, WorkManager foreground job, AudioTrack mixer/player, SAF pickers.
+- `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference (CPU or Snapdragon NNAPI), cache, WAV/FLAC export.
+- `:app` — Compose UI, WorkManager foreground job, source preview, AudioTrack mixer/player, SAF pickers.
 
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — modules, runtime flow, DSP and playback invariants.
 - [`docs/MODELS.md`](docs/MODELS.md) — pinned models, hashes, input configurations and licensing.
+- [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) — CPU, Snapdragon NNAPI and the QNN/NPU path.
+- [`docs/PLAYBACK.md`](docs/PLAYBACK.md) — source preview and synchronized stem playback.
 - [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md) — local/CI builds and APK releases.
 - [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — verified behavior, limitations and next steps.
 - [`AGENTS.md`](AGENTS.md) — onboarding context for AI coding agents.
@@ -42,14 +44,16 @@ Both use stereo 44.1 kHz, periodic Hann, `n_fft` 6144/7680, hop 1024, reflect pa
 
 ```bash
 ./gradlew :core-dsp:test
+./gradlew :separation:testDebugUnitTest
 ./gradlew :app:assembleDebug
 ```
 
-CI runs both on every push. The debug APK is uploaded as the `stemsep-debug` artifact and published to the rolling [`latest` release](https://github.com/penetratorcwl/StemSep/releases/tag/latest).
+CI runs all three on every push. The debug APK is uploaded as the `stemsep-debug` artifact and published to the rolling [`latest` release](https://github.com/penetratorcwl/StemSep/releases/tag/latest).
 
 ## Notes
 
 - Minimum SDK 26, target/compile SDK 36.
-- ONNX Runtime 1.28.0 CPU execution provider, 4 intra-op threads. XNNPACK and NNAPI were slower on the test device.
+- ONNX Runtime 1.28.0 CPU execution provider, 4 intra-op threads. Snapdragon GPU/NPU via NNAPI is available as an experimental option; the earlier NNAPI benchmark was slower on the test phone and needs re-measuring on the target device.
+- The QNN HTP NPU path is not enabled yet because the current models are float32 and HTP requires quantized models.
 - The model license is not bundled; the user downloads the model directly from its source.
 - FLAC export uses `java-flac-encoder` (LGPL).

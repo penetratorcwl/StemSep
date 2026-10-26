@@ -17,12 +17,26 @@ StemSep is an Android prototype for on-device vocal/instrumental separation.
 
 The separation engine is intentionally separated from the UI so it can later be reused by BitChord.
 
+## Documentation protocol
+
+Documentation is part of "done". Before changing code:
+
+1. Read [`docs/README.md`](docs/README.md) and the docs relevant to the change.
+2. Check [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) for known gaps; do not trust an old chat summary over the files.
+3. After the change, update the affected docs, `README.md`, and this file in the same commit.
+4. In the final response, state which docs were updated and what remains unverified.
+
+When context is compacted, preserve the docs paths, the current cache/version semantics, and the backend limitations in the summary. A fresh agent must re-read the docs before editing.
+
 ## Read these first
 
-1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-2. [`docs/MODELS.md`](docs/MODELS.md)
-3. [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md)
-4. [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
+1. [`docs/README.md`](docs/README.md)
+2. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+3. [`docs/MODELS.md`](docs/MODELS.md)
+4. [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md)
+5. [`docs/PLAYBACK.md`](docs/PLAYBACK.md)
+6. [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md)
+7. [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
 
 ## Repository layout
 
@@ -42,11 +56,14 @@ Important files:
 - `core-dsp/src/main/kotlin/app/stemsep/dsp/StereoResampler.kt`
 - `core-dsp/src/test/kotlin/app/stemsep/dsp/CoreDspTest.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/ModelCatalog.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/ComputeBackend.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/OnnxMdxEngine.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/SeparationPipeline.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemCache.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemExporter.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemPlayer.kt`
 - `app/src/main/kotlin/app/stemsep/ui/MainViewModel.kt`
+- `app/src/main/kotlin/app/stemsep/playback/SourcePreviewPlayer.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
 - `.github/workflows/android.yml`
@@ -55,6 +72,7 @@ Important files:
 
 ```bash
 ./gradlew :core-dsp:test
+./gradlew :separation:testDebugUnitTest
 ./gradlew :app:assembleDebug
 ```
 
@@ -70,19 +88,21 @@ SAF URI
   -> cache lookup
   -> model download + SHA-256 verification
   -> MediaExtractor/MediaCodec decode to 44.1 kHz stereo f32
-  -> MDX STFT + ONNX inference + overlap-add
-  -> vocals.f32 + instrumental.f32 + meta.json
+  -> MDX STFT + ONNX inference (CPU or Snapdragon NNAPI) + overlap-add
+  -> vocals.f32 + instrumental.f32 + meta.json (effective backend)
   -> cache commit
   -> AudioTrack mixer / SAF export
+
+While this runs, SourcePreviewPlayer may play the original source.
 ```
 
 Cache key:
 
 ```text
-<source-sha256>-<model-id>-v<separator-version>
+<source-sha256>-<model-id>-<backend>-v<separator-version>
 ```
 
-The cache is under `context.cacheDir/stems`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version.
+`SEPARATOR_VERSION` is `2`. The cache is under `context.cacheDir/stems`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version and backend.
 
 ## Models
 
@@ -113,6 +133,14 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - Vocals + instrumental must reconstruct the mixture.
 - Do not change STFT, chunking or overlap math without updating tests and `ModelCatalog.SEPARATOR_VERSION`.
 
+## Compute backends
+
+- CPU: ONNX Runtime CPU EP, four intra-op threads. This is the default and the existing benchmark path.
+- Snapdragon GPU/NPU: Android NNAPI EP, gated by Qualcomm Snapdragon + `arm64-v8a` + API 27+. It requests FP16; the Android/Qualcomm driver decides whether GPU, NPU or CPU handles each node.
+- NNAPI session creation failure falls back to CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
+- QNN HTP is not enabled. The current models are float32; QNN HTP requires quantized models and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
+- See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or cache keys.
+
 ## Android/UI invariants
 
 - One `AudioTrack` for both stems; do not create independent players per stem.
@@ -121,7 +149,8 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - The worker is a `CoroutineWorker`; `getForegroundInfo()` is `suspend`.
 - The foreground service type is `dataSync`; manifest permissions must stay consistent.
 - Source audio and export tree use SAF; do not replace with broad storage permissions.
-- The player and cache must be released when the source/model changes.
+- The stem player and source preview must be released when the source/model/backend changes.
+- The source preview is a separate `MediaPlayer`; it is not a live stem preview.
 - Keep model inference on `Dispatchers.IO` or a worker, never on the main thread.
 
 ## Release process
@@ -144,10 +173,11 @@ The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not co
 ## Current status
 
 - DSP: 7/7 local JUnit tests pass.
-- CI: DSP test and debug APK build pass.
+- Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
+- CI: DSP test, separation tests and debug APK build pass (verify the latest run after changes).
 - Release: latest debug APK is published on GitHub Releases.
-- Runtime on a physical phone: not yet fully verified.
-- Known gaps: no notification cancel action, no background playback service, debug signing only, cache in `cacheDir`.
+- Runtime on a physical phone: source preview, NNAPI and fallback are not yet verified on a device.
+- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, debug signing only, cache in `cacheDir`.
 
 ## Working rules
 
@@ -156,5 +186,6 @@ The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not co
 - Prefer small, focused changes and preserve existing style.
 - Do not add comments unless they are necessary for non-obvious invariants.
 - After DSP changes, run `:core-dsp:test`.
+- After backend/cache changes, run `:separation:testDebugUnitTest` in CI.
 - After Android changes, rely on GitHub Actions for the authoritative build.
-- Update this file and `docs/` when architecture, model configuration or release behavior changes.
+- Update this file and `docs/` when architecture, model configuration, backend, playback or release behavior changes.

@@ -17,6 +17,7 @@ import androidx.work.workDataOf
 import app.stemsep.MainActivity
 import app.stemsep.R
 import app.stemsep.StemSepApp
+import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
 import kotlinx.coroutines.CancellationException
@@ -29,6 +30,7 @@ class SeparationWorker(
         val uriString = inputData.getString(KEY_INPUT_URI)
             ?: return Result.failure(workDataOf(KEY_ERROR to "Missing input URI"))
         val model = ModelCatalog.byId(inputData.getString(KEY_MODEL_ID))
+        val backend = ComputeBackend.fromId(inputData.getString(KEY_BACKEND))
         val pipeline = (applicationContext as StemSepApp).container.pipeline
 
         createChannel()
@@ -40,6 +42,7 @@ class SeparationWorker(
             val result = pipeline.separate(
                 uri = Uri.parse(uriString),
                 model = model,
+                backend = backend,
                 onProgress = { progress ->
                     val percent = (progress.fraction * 100).toInt()
                     if (progress.phase != lastPhase || percent != lastPercent) {
@@ -143,6 +146,7 @@ class SeparationWorker(
     companion object {
         const val KEY_INPUT_URI = "input_uri"
         const val KEY_MODEL_ID = "model_id"
+        const val KEY_BACKEND = "backend"
         const val KEY_PHASE = "phase"
         const val KEY_PROGRESS = "progress"
         const val KEY_CACHE_KEY = "cache_key"

@@ -12,7 +12,11 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import app.stemsep.StemSepApp
+import app.stemsep.playback.SourcePreviewPlayer
 import app.stemsep.separation.CachedStems
+import app.stemsep.separation.ComputeBackend
+import app.stemsep.separation.ComputeCapabilities
+import app.stemsep.separation.ComputeCapabilityDetector
 import app.stemsep.separation.ExportFormat
 import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
@@ -20,10 +24,12 @@ import app.stemsep.separation.StemPlayer
 import app.stemsep.work.SeparationWorker
 import app.stemsep.dsp.StemMode
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -31,6 +37,7 @@ data class UiState(
     val selectedUri: Uri? = null,
     val selectedName: String? = null,
     val modelId: String = ModelCatalog.DEFAULT_MODEL_ID,
+    val backend: ComputeBackend = ComputeBackend.CPU,
     val workId: UUID? = null,
     val running: Boolean = false,
     val phase: String? = null,
@@ -41,6 +48,10 @@ data class UiState(
     val durationFrames: Long = 0,
     val positionFrames: Long = 0,
     val isPlaying: Boolean = false,
+    val previewReady: Boolean = false,
+    val previewPlaying: Boolean = false,
+    val previewPositionMs: Int = 0,
+    val previewDurationMs: Int = 0,
     val mode: StemMode = StemMode.MIX,
     val vocalLevel: Float = 1f,
     val exporting: Boolean = false,
@@ -51,11 +62,14 @@ data class UiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as StemSepApp).container
     private val workManager = WorkManager.getInstance(application)
+    val capabilities: ComputeCapabilities = ComputeCapabilityDetector.detect()
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var player: StemPlayer? = null
+    private var previewPlayer: SourcePreviewPlayer? = null
     private var observeJob: Job? = null
+    private var previewTickJob: Job? = null
 
     fun selectAudio(uri: Uri?) {
         if (uri == null) return
@@ -69,19 +83,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workManager.cancelAllWorkByTag(SeparationWorker.WORK_TAG)
         observeJob?.cancel()
         releasePlayer()
+        releasePreview()
         _state.value = UiState(
             selectedUri = uri,
             selectedName = displayName(uri),
             modelId = _state.value.modelId,
+            backend = _state.value.backend,
         )
     }
 
     fun selectModel(modelId: String) {
         if (modelId == _state.value.modelId) return
         releasePlayer()
+        releasePreview()
         _state.update {
             it.copy(
                 modelId = modelId,
+                cached = null,
+                playerReady = false,
+                durationFrames = 0,
+                positionFrames = 0,
+                isPlaying = false,
+                phase = null,
+                progress = 0f,
+                error = null,
+                message = null,
+            )
+        }
+    }
+
+    fun selectBackend(backend: ComputeBackend) {
+        if (backend == _state.value.backend) return
+        if (!capabilities.supports(backend)) return
+        releasePlayer()
+        releasePreview()
+        _state.update {
+            it.copy(
+                backend = backend,
                 cached = null,
                 playerReady = false,
                 durationFrames = 0,
@@ -100,6 +138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val uri = current.selectedUri ?: return
         if (current.running) return
         releasePlayer()
+        releasePreview()
         observeJob?.cancel()
         val model = ModelCatalog.byId(current.modelId)
         val request = OneTimeWorkRequestBuilder<SeparationWorker>()
@@ -107,6 +146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workDataOf(
                     SeparationWorker.KEY_INPUT_URI to uri.toString(),
                     SeparationWorker.KEY_MODEL_ID to model.id,
+                    SeparationWorker.KEY_BACKEND to current.backend.cacheId,
                 ),
             )
             .addTag(SeparationWorker.WORK_TAG)
@@ -133,12 +173,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             request,
         )
         observeWork(request.id)
+        startSourcePreview(uri)
     }
 
     fun cancel() {
         val id = _state.value.workId ?: return
         workManager.cancelWorkById(id)
-        _state.update { it.copy(phase = "CANCELLED") }
+        releasePreview()
+        _state.update {
+            it.copy(
+                phase = "CANCELLED",
+                previewReady = false,
+                previewPlaying = false,
+                previewPositionMs = 0,
+            )
+        }
+    }
+
+    fun togglePreview() {
+        val currentPlayer = previewPlayer ?: return
+        if (currentPlayer.isPlaying()) {
+            currentPlayer.pause()
+            previewTickJob?.cancel()
+            _state.update {
+                it.copy(
+                    previewPlaying = false,
+                    previewPositionMs = currentPlayer.positionMs(),
+                )
+            }
+        } else {
+            if (_state.value.previewPositionMs >= _state.value.previewDurationMs) {
+                currentPlayer.seekTo(0)
+                _state.update { it.copy(previewPositionMs = 0) }
+            }
+            if (currentPlayer.play()) {
+                _state.update { it.copy(previewPlaying = true) }
+                startPreviewTicker()
+            }
+        }
+    }
+
+    fun seekPreview(positionMs: Int) {
+        val currentPlayer = previewPlayer ?: return
+        val target = positionMs.coerceIn(0, _state.value.previewDurationMs)
+        currentPlayer.seekTo(target.toLong())
+        _state.update { it.copy(previewPositionMs = target) }
     }
 
     fun togglePlay() {
@@ -220,6 +299,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         observeJob?.cancel()
         releasePlayer()
+        releasePreview()
         super.onCleared()
     }
 
@@ -245,6 +325,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
+                        releasePreview()
                         _state.update {
                             it.copy(
                                 running = false,
@@ -261,12 +342,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     WorkInfo.State.FAILED -> {
+                        releasePreview()
                         val message = info.outputData.getString(SeparationWorker.KEY_ERROR)
                             ?: "Separation failed"
                         _state.update { it.copy(running = false, error = message) }
                     }
 
                     WorkInfo.State.CANCELLED -> {
+                        releasePreview()
                         _state.update { it.copy(running = false, phase = "CANCELLED") }
                     }
                 }
@@ -297,12 +380,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 cached = stems,
+                backend = ComputeBackend.fromId(stems.metadata.backend),
                 playerReady = true,
                 durationFrames = stems.metadata.frameCount,
                 positionFrames = 0,
                 isPlaying = false,
                 mode = StemMode.MIX,
                 vocalLevel = 1f,
+            )
+        }
+    }
+
+    private fun startSourcePreview(uri: Uri) {
+        previewPlayer = SourcePreviewPlayer(
+            context = getApplication(),
+            uri = uri,
+            onPrepared = { durationMs ->
+                _state.update {
+                    it.copy(
+                        previewReady = true,
+                        previewDurationMs = durationMs,
+                        previewPositionMs = 0,
+                    )
+                }
+            },
+            onCompletion = {
+                previewTickJob?.cancel()
+                _state.update {
+                    it.copy(
+                        previewPlaying = false,
+                        previewPositionMs = it.previewDurationMs,
+                    )
+                }
+            },
+            onError = { message ->
+                _state.update {
+                    it.copy(
+                        error = message,
+                        previewReady = false,
+                        previewPlaying = false,
+                    )
+                }
+            },
+        )
+    }
+
+    private fun startPreviewTicker() {
+        previewTickJob?.cancel()
+        previewTickJob = viewModelScope.launch {
+            while (isActive) {
+                val currentPlayer = previewPlayer ?: break
+                _state.update {
+                    it.copy(
+                        previewPositionMs = currentPlayer.positionMs(),
+                        previewPlaying = currentPlayer.isPlaying(),
+                    )
+                }
+                if (!currentPlayer.isPlaying()) break
+                delay(250)
+            }
+        }
+    }
+
+    private fun releasePreview() {
+        previewTickJob?.cancel()
+        previewTickJob = null
+        previewPlayer?.close()
+        previewPlayer = null
+        _state.update {
+            it.copy(
+                previewReady = false,
+                previewPlaying = false,
+                previewPositionMs = 0,
+                previewDurationMs = 0,
             )
         }
     }

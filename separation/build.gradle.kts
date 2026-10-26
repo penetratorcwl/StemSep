@@ -33,4 +33,6 @@ dependencies {
     implementation(libs.androidx.documentfile)
     implementation(libs.onnxruntime.android)
     implementation(libs.java.flac.encoder)
+
+    testImplementation(libs.junit)
 }

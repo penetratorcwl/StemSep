@@ -42,13 +42,14 @@ class SeparationPipeline(
     suspend fun separate(
         uri: Uri,
         model: ModelSpec,
+        backend: ComputeBackend = ComputeBackend.CPU,
         onProgress: (SeparationProgress) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): SeparationResult = withContext(Dispatchers.IO) {
         val sourceInfo = readSourceInfo(uri)
         onProgress(SeparationProgress(SeparationPhase.HASHING, 0f))
         val sourceHash = hashSource(uri, sourceInfo.sizeBytes, onProgress, isCancelled)
-        val cacheKey = cache.keyFor(sourceHash, model.id)
+        val cacheKey = cache.keyFor(sourceHash, model.id, backend)
 
         cache.find(cacheKey)?.let { cached ->
             onProgress(SeparationProgress(SeparationPhase.FINALIZING, 1f))
@@ -79,11 +80,16 @@ class SeparationPipeline(
             onProgress(SeparationProgress(SeparationPhase.SEPARATING, 0f))
             var vocalFrames = 0L
             var instrumentalFrames = 0L
+            var effectiveBackend = backend
             FloatPcmFileSource(decodedFile, decoded.frameCount).use { source ->
                 FloatPcmFileWriter(File(tempDirectory, StemCache.VOCALS_FILE)).use { vocals ->
                     FloatPcmFileWriter(File(tempDirectory, StemCache.INSTRUMENTAL_FILE))
                         .use { instrumental ->
-                            OnnxMdxEngine(modelFile).use { engine ->
+                            OnnxMdxEngine(
+                                modelFile = modelFile,
+                                requestedBackend = backend,
+                            ).use { engine ->
+                                effectiveBackend = engine.activeBackend
                                 MdxStreamingSeparator(
                                     config = model.config,
                                     inference = engine.inference(model.config),
@@ -117,6 +123,7 @@ class SeparationPipeline(
                 sampleRate = decoded.sampleRate,
                 createdAt = System.currentTimeMillis(),
                 separatorVersion = ModelCatalog.SEPARATOR_VERSION,
+                backend = effectiveBackend.cacheId,
             )
             val stems = cache.commit(cacheKey, tempDirectory, metadata)
             committed = true

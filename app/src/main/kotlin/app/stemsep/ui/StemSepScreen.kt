@@ -51,6 +51,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.stemsep.dsp.StemMode
+import app.stemsep.separation.ComputeBackend
+import app.stemsep.separation.ComputeCapabilities
 import app.stemsep.separation.ExportFormat
 import app.stemsep.separation.ModelCatalog
 import kotlin.math.max
@@ -115,8 +117,11 @@ fun StemSepScreen(viewModel: MainViewModel) {
 
             ModelCard(
                 selectedModelId = state.modelId,
+                selectedBackend = state.backend,
+                capabilities = viewModel.capabilities,
                 enabled = !state.running,
                 onSelect = viewModel::selectModel,
+                onSelectBackend = viewModel::selectBackend,
             )
 
             if (state.running) {
@@ -125,6 +130,13 @@ fun StemSepScreen(viewModel: MainViewModel) {
                     progress = state.progress,
                     onCancel = viewModel::cancel,
                 )
+                if (state.previewReady) {
+                    SourcePreviewCard(
+                        state = state,
+                        onToggle = viewModel::togglePreview,
+                        onSeek = viewModel::seekPreview,
+                    )
+                }
             } else {
                 Button(
                     onClick = viewModel::start,
@@ -191,8 +203,11 @@ private fun SourceCard(
 @Composable
 private fun ModelCard(
     selectedModelId: String,
+    selectedBackend: ComputeBackend,
+    capabilities: ComputeCapabilities,
     enabled: Boolean,
     onSelect: (String) -> Unit,
+    onSelectBackend: (ComputeBackend) -> Unit,
 ) {
     val selected = ModelCatalog.byId(selectedModelId)
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -221,6 +236,73 @@ private fun ModelCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
+
+            HorizontalDivider()
+
+            Text("Compute", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ComputeBackend.entries.forEach { backend ->
+                    FilterChip(
+                        selected = selectedBackend == backend,
+                        onClick = { onSelectBackend(backend) },
+                        enabled = enabled && capabilities.supports(backend),
+                        label = { Text(backend.displayName) },
+                    )
+                }
+            }
+            Text(
+                text = when {
+                    selectedBackend == ComputeBackend.CPU ->
+                        "Runs on the ARM CPU with ONNX Runtime (4 intra-op threads)."
+                    capabilities.canUseSnapdragonNnapi ->
+                        "Snapdragon ${capabilities.socLabel}: Android NNAPI may use the GPU/NPU. Unsupported operations fall back to CPU."
+                    else ->
+                        "Snapdragon acceleration is unavailable on this device; CPU is used."
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourcePreviewCard(
+    state: UiState,
+    onToggle: () -> Unit,
+    onSeek: (Int) -> Unit,
+) {
+    val duration = state.previewDurationMs
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Source preview", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "${formatMs(state.previewPositionMs)} / ${formatMs(duration)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = state.previewPositionMs.coerceIn(0, duration).toFloat(),
+                onValueChange = { onSeek(it.roundToInt()) },
+                valueRange = 0f..max(1f, duration.toFloat()),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onToggle) {
+                    Icon(
+                        imageVector = if (state.previewPlaying) Icons.Default.Pause
+                        else Icons.Default.PlayArrow,
+                        contentDescription = if (state.previewPlaying) "Pause source" else "Play source",
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
+                Text("Listen while the model works")
+            }
         }
     }
 }
@@ -275,6 +357,11 @@ private fun PlayerCard(
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "Engine: ${state.backend.displayName}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
             )
             Text(
                 text = "${formatTime(position, sampleRate)} / ${formatTime(duration, sampleRate)}",
@@ -423,6 +510,13 @@ private fun modeLabel(mode: StemMode): String = when (mode) {
 private fun formatTime(frames: Long, sampleRate: Int): String {
     if (sampleRate <= 0) return "0:00"
     val totalSeconds = (frames / sampleRate).coerceAtLeast(0)
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "$minutes:${seconds.toString().padStart(2, '0')}"
+}
+
+private fun formatMs(milliseconds: Int): String {
+    val totalSeconds = (milliseconds / 1000).coerceAtLeast(0)
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "$minutes:${seconds.toString().padStart(2, '0')}"

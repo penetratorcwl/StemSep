@@ -3,31 +3,37 @@ package app.stemsep.separation
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.providers.NNAPIFlags
+import android.util.Log
 import app.stemsep.dsp.MdxConfig
 import app.stemsep.dsp.MdxInference
 import java.io.Closeable
 import java.io.File
 import java.nio.FloatBuffer
+import java.util.EnumSet
 
 class OnnxMdxEngine(
     modelFile: File,
     threads: Int = 4,
+    requestedBackend: ComputeBackend = ComputeBackend.CPU,
 ) : Closeable {
     private val environment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
     private val inputName: String
     private val outputName: String
+    val activeBackend: ComputeBackend
 
     init {
-        val options = OrtSession.SessionOptions()
-        try {
-            options.setIntraOpNumThreads(threads.coerceAtLeast(1))
-            options.setInterOpNumThreads(1)
-            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            session = environment.createSession(modelFile.absolutePath, options)
-        } finally {
-            options.close()
+        var effectiveBackend = requestedBackend
+        session = try {
+            createSession(modelFile, requestedBackend, threads)
+        } catch (error: Exception) {
+            if (requestedBackend == ComputeBackend.CPU) throw error
+            Log.w(TAG, "Falling back to CPU after ${requestedBackend.cacheId} failed", error)
+            effectiveBackend = ComputeBackend.CPU
+            createSession(modelFile, ComputeBackend.CPU, threads)
         }
+        activeBackend = effectiveBackend
         inputName = session.inputNames.first()
         outputName = session.outputNames.first()
     }
@@ -57,5 +63,30 @@ class OnnxMdxEngine(
 
     override fun close() {
         session.close()
+    }
+
+    private fun createSession(
+        modelFile: File,
+        backend: ComputeBackend,
+        threads: Int,
+    ): OrtSession {
+        val options = OrtSession.SessionOptions()
+        try {
+            options.setInterOpNumThreads(1)
+            options.setIntraOpNumThreads(
+                if (backend == ComputeBackend.CPU) threads.coerceAtLeast(1) else 1,
+            )
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            if (backend == ComputeBackend.SNAPDRAGON_NNAPI) {
+                options.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
+            }
+            return environment.createSession(modelFile.absolutePath, options)
+        } finally {
+            options.close()
+        }
+    }
+
+    private companion object {
+        const val TAG = "StemSepOnnx"
     }
 }

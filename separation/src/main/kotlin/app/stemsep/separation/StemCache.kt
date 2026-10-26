@@ -12,6 +12,7 @@ data class StemMetadata(
     val sampleRate: Int,
     val createdAt: Long,
     val separatorVersion: Int,
+    val backend: String,
 )
 
 data class CachedStems(
@@ -25,8 +26,11 @@ class StemCache(context: Context) {
     private val root = File(context.cacheDir, "stems")
     private val workRoot = File(context.cacheDir, "stems-work")
 
-    fun keyFor(sourceHash: String, modelId: String): String =
-        "$sourceHash-$modelId-v${ModelCatalog.SEPARATOR_VERSION}"
+    fun keyFor(
+        sourceHash: String,
+        modelId: String,
+        backend: ComputeBackend = ComputeBackend.CPU,
+    ): String = "$sourceHash-$modelId-${backend.cacheId}-v${ModelCatalog.SEPARATOR_VERSION}"
 
     fun find(key: String): CachedStems? {
         val directory = File(root, key)
@@ -44,6 +48,7 @@ class StemCache(context: Context) {
                 sampleRate = json.getInt("sampleRate"),
                 createdAt = json.getLong("createdAt"),
                 separatorVersion = json.getInt("separatorVersion"),
+                backend = json.optString("backend", ComputeBackend.CPU.cacheId),
             )
         }.getOrNull() ?: return null
 
@@ -90,6 +95,7 @@ class StemCache(context: Context) {
             .put("sampleRate", metadata.sampleRate)
             .put("createdAt", metadata.createdAt)
             .put("separatorVersion", metadata.separatorVersion)
+            .put("backend", metadata.backend)
         File(directory, META_FILE).writeText(json.toString())
     }
 
