@@ -2,6 +2,15 @@
 
 On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer.
 
+## Download
+
+The latest debug APK is attached directly to the rolling GitHub release, so there is no ZIP to unpack:
+
+- **APK:** <https://github.com/penetratorcwl/StemSep/releases/latest/download/StemSep-debug.apk>
+- **Release:** <https://github.com/penetratorcwl/StemSep/releases/tag/latest>
+
+The first separation downloads the selected ONNX model; model weights are not bundled in the APK.
+
 ## Models
 
 The APK contains no model weights. The model is downloaded on first use and verified against a pinned size and SHA-256.
@@ -21,6 +30,14 @@ Both use stereo 44.1 kHz, periodic Hann, `n_fft` 6144/7680, hop 1024, reflect pa
 - `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference, cache, WAV/FLAC export.
 - `:app` — Compose UI, WorkManager foreground job, AudioTrack mixer/player, SAF pickers.
 
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — modules, runtime flow, DSP and playback invariants.
+- [`docs/MODELS.md`](docs/MODELS.md) — pinned models, hashes, input configurations and licensing.
+- [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md) — local/CI builds and APK releases.
+- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — verified behavior, limitations and next steps.
+- [`AGENTS.md`](AGENTS.md) — onboarding context for AI coding agents.
+
 ## Build
 
 ```bash
@@ -28,7 +45,7 @@ Both use stereo 44.1 kHz, periodic Hann, `n_fft` 6144/7680, hop 1024, reflect pa
 ./gradlew :app:assembleDebug
 ```
 
-CI runs both on every push. The debug APK is uploaded as the `stemsep-debug` artifact.
+CI runs both on every push. The debug APK is uploaded as the `stemsep-debug` artifact and published to the rolling [`latest` release](https://github.com/penetratorcwl/StemSep/releases/tag/latest).
 
 ## Notes
 

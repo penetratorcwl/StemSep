@@ -37,6 +37,8 @@ jobs:
   build:
     name: Build debug APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,3 +67,25 @@ jobs:
           name: stemsep-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish APK to the latest release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" "$RUNNER_TEMP/StemSep-debug.apk"
+          NOTES="Automatic debug build from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Package: app.stemsep.debug. The first separation downloads the selected ONNX model."
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload latest "$RUNNER_TEMP/StemSep-debug.apk" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit latest --repo "$GITHUB_REPOSITORY" --notes "$NOTES"
+          else
+            gh release create latest "$RUNNER_TEMP/StemSep-debug.apk" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Latest debug build" \
+              --notes "$NOTES"
+          fi
