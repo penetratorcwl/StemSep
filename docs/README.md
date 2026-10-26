@@ -22,7 +22,7 @@ The short AI onboarding file is [`../AGENTS.md`](../AGENTS.md).
 - Model weights are never committed to the repository; they are downloaded and SHA-256 verified on first use.
 - Default inference is the ONNX Runtime CPU EP with configurable worker threads; Snapdragon GPU/NPU via NNAPI is experimental.
 - The app exposes growing separated stems as a live preview (vocals by default) while separation runs, then switches to the committed stems.
-- The Compute card exposes CPU thread count and NNAPI Balanced/Accelerator-only policy; the stats card shows CPU usage and inference timing. GPU/NPU utilization and core counts are not publicly exposed by Android.
+- The Compute card exposes CPU thread count and an inline NNAPI CPU-fallback switch. The stats card shows CPU/GPU/inference sparklines and a swipe-dismiss detail sheet. GPU/NPU utilization and core counts are not publicly exposed by Android. Settings provides System/Light/Dark modes and Material You/Violet/Teal/Graphite palettes.
 - Release APKs use a stable CI signing key. One uninstall is required when moving from a pre-stable-key build.
 
 ## Product boundary

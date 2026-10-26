@@ -40,22 +40,40 @@ class ComputeStatsSampler(
     }
 
     private fun gpuPercent(): Float? {
-        for (path in GPU_BUSY_PATHS) {
-            val value = runCatching {
-                val text = File(path).readText().trim()
-                NUMBER.find(text)?.value?.toFloatOrNull()
-            }.getOrNull() ?: continue
+        for (path in GPU_PERCENT_PATHS) {
+            val value = readNumbers(path).firstOrNull() ?: continue
             if (value in 0f..100f) return value
+        }
+        for (path in GPU_COUNTER_PATHS) {
+            val numbers = readNumbers(path)
+            if (numbers.size < 2) continue
+            val busy = numbers[0]
+            val total = numbers[1]
+            if (total <= 0f) continue
+            return ((busy / total) * 100f).coerceIn(0f, 100f)
         }
         return null
     }
 
+    private fun readNumbers(path: String): List<Float> = runCatching {
+        val text = File(path).readText().trim()
+        NUMBER.findAll(text).mapNotNull { it.value.toFloatOrNull() }.toList()
+    }.getOrDefault(emptyList())
+
     private companion object {
         val NUMBER = Regex("""([0-9]+(?:\.[0-9]+)?)""")
-        val GPU_BUSY_PATHS = listOf(
+        val GPU_PERCENT_PATHS = listOf(
             "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
-            "/sys/class/kgsl/kgsl-3d0/gpu_busy",
             "/sys/class/kgsl/kgsl-3d0/devfreq/gpu_load",
+            "/sys/kernel/gpu/gpu_busy_percentage",
+            "/sys/kernel/gpu/gpu_load",
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy",
+            "/sys/kernel/gpu/gpu_busy",
+        )
+        val GPU_COUNTER_PATHS = listOf(
+            "/sys/class/kgsl/kgsl-3d0/gpubusy",
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy",
+            "/sys/kernel/gpu/gpubusy",
             "/sys/kernel/gpu/gpu_busy",
         )
     }

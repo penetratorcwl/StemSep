@@ -33,10 +33,10 @@ The app calls NNAPI through ONNX Runtime:
 options.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
 ```
 
-The UI offers two NNAPI policies:
+The Compute card exposes the policy as one inline **Allow CPU fallback** switch:
 
-- **Balanced** (default): NNAPI may use GPU, NPU or CPU per operation, and the app retries on the CPU EP if NNAPI session creation fails.
-- **Accelerator only**: adds `NNAPIFlags.CPU_DISABLED` and does not retry on CPU. If the driver cannot compile or run the model, the job fails with an error instead of silently using CPU.
+- **On / Balanced** (default): NNAPI may use GPU, NPU or CPU per operation, and the app retries on the CPU EP if NNAPI session creation fails.
+- **Off / Accelerator only**: adds `NNAPIFlags.CPU_DISABLED` and does not retry on CPU. If the driver cannot compile or run the model, the job fails with an error instead of silently using CPU.
 
 Android NNAPI is a system API, not a direct GPU or NPU API. The Qualcomm NNAPI driver chooses the available accelerator for each supported operation. As a result:
 
@@ -50,7 +50,7 @@ GPU and NPU are therefore one UI option, not two switches. The UI reports the re
 
 The engine attempts the requested backend and, in Balanced mode, retries with CPU if session creation fails. The failure message is stored as `fallbackReason`, sent through WorkManager progress and persisted in `meta.json`. The UI shows:
 
-- **Requested** — the chip selected by the user;
+- **Requested** — the backend chip selected by the user;
 - **Active** — `engine.activeBackend` while running, or the cached effective backend;
 - **Fallback** — the exception message when NNAPI session creation failed.
 
@@ -61,7 +61,7 @@ If ORT falls back per operation inside a successful NNAPI session, the active ba
 The Compute card exposes:
 
 - **CPU worker threads** — 1 to `Runtime.availableProcessors()`, persisted across launches;
-- **GPU/NPU policy** — Balanced or Accelerator only, persisted across launches;
+- **Allow CPU fallback** — an inline switch mapping to Balanced or Accelerator only, persisted across launches;
 - **Requested / Active / Fallback** status.
 
 The Compute stats card shows:
@@ -69,10 +69,12 @@ The Compute stats card shows:
 - **CPU** — this process's share of total CPU capacity, derived from `Process.getElapsedCpuTime()` over wall time and divided by the reported core count. It is not a per-core utilization graph.
 - **Worker threads** — the effective inference thread count. NNAPI uses one intra-op thread; CPU uses the selected count.
 - **Inference** — average milliseconds per completed chunk and the number of chunks.
-- **GPU** — best-effort busy percentage from Qualcomm sysfs paths such as `gpu_busy_percentage` when readable, otherwise `driver-managed`.
+- **GPU** — best-effort busy percentage from Qualcomm sysfs paths such as `gpu_busy_percentage`, `gpubusy` or `devfreq/gpu_load` when readable, otherwise `driver-managed`.
 - **NPU** — `driver-managed` when NNAPI is active, otherwise `off`. Android does not expose a public NPU utilization counter.
 
-GPU/NPU utilization and core counts are not available through a stable Android API. Do not present the sysfs value as guaranteed; SELinux or a different driver may hide it.
+CPU, GPU and inference rows keep a short rolling history and show a mini sparkline next to the value. Tapping a row opens a full-height bottom sheet with a larger chart, current/average/peak values, and swipe-down dismissal. The sampler runs every 750 ms off the main thread and keeps 90 points (about one minute for CPU/GPU; inference adds one point per completed chunk). NPU has no chart because there is no public utilization counter.
+
+GPU/NPU utilization and core counts are not available through a stable Android API. Do not present the sysfs value as guaranteed; SELinux or a different driver may hide it. A low GPU reading can mean NNAPI placed the work on the CPU or NPU, or that the driver does not expose a useful busy counter.
 
 ## Cache impact
 
@@ -90,7 +92,7 @@ A NNAPI session that fell back to CPU is still cached under the requested NNAPI 
 
 ## Why there is no QNN HTP backend yet
 
-ONNX Runtime's Qualcomm QNN execution provider is the direct route to the Hexagon NPU. The Android QNN AAR exists, but the HTP backend only supports quantized models. The current `mdx-9482` and `Kim_Vocal_2` files are float32 models and cannot run on HTP without a calibration/quantization pipeline and a quantized model artifact.
+ONNX Runtime's Qualcomm QNN execution provider is the direct route to the Hexagon NPU. The Android QNN AAR exists, but the HTP backend only supports quantized models. The current `mdx-9482` file is float32 and cannot run on HTP without a calibration/quantization pipeline and a quantized model artifact.
 
 QNN GPU can run float models, but adding the QNN runtime increases the APK by a large amount (the QNN runtime AAR is roughly 61 MB compressed and includes multiple Hexagon skels). That is a separate build-size decision.
 

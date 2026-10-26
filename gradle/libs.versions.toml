@@ -31,6 +31,7 @@ androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentfile" }
 
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-animation = { module = "androidx.compose.animation:animation" }
 compose-foundation = { module = "androidx.compose.foundation:foundation" }
 compose-material3 = { module = "androidx.compose.material3:material3" }
 compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
@@ -56,4 +57,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 
 [bundles]
-compose = ["compose-foundation", "compose-material3", "compose-material-icons-extended", "compose-ui", "compose-ui-graphics", "compose-ui-tooling-preview"]
+compose = ["compose-animation", "compose-foundation", "compose-material3", "compose-material-icons-extended", "compose-ui", "compose-ui-graphics", "compose-ui-tooling-preview"]

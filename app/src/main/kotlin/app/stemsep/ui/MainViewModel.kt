@@ -25,6 +25,9 @@ import app.stemsep.separation.LiveStemPlayer
 import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
 import app.stemsep.separation.StemPlayer
+import app.stemsep.ui.theme.AppSettings
+import app.stemsep.ui.theme.ThemeMode
+import app.stemsep.ui.theme.ThemePalette
 import app.stemsep.work.SeparationWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+
+private const val MAX_STATS_HISTORY = 90
 
 data class UiState(
     val selectedUri: Uri? = null,
@@ -68,6 +73,9 @@ data class UiState(
     val liveVocalLevel: Float = 1f,
     val cpuUsagePercent: Float? = null,
     val gpuUsagePercent: Float? = null,
+    val cpuHistory: List<Float> = emptyList(),
+    val gpuHistory: List<Float> = emptyList(),
+    val inferenceHistory: List<Float> = emptyList(),
     val inferenceAverageMillis: Long = 0,
     val inferenceChunks: Int = 0,
     val workerThreads: Int = 0,
@@ -83,6 +91,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val workManager = WorkManager.getInstance(application)
     val capabilities: ComputeCapabilities = ComputeCapabilityDetector.detect()
     private val prefs = application.getSharedPreferences("stemsep-compute", Context.MODE_PRIVATE)
+    private val settingsPrefs = application.getSharedPreferences("stemsep-settings", Context.MODE_PRIVATE)
     private val defaultCpuThreads = capabilities.cpuCores.coerceAtMost(4).coerceAtLeast(1)
     private var selectedCpuThreads = prefs
         .getInt("cpu_threads", defaultCpuThreads)
@@ -98,6 +107,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ),
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private val _settings = MutableStateFlow(
+        AppSettings(
+            themeMode = ThemeMode.fromId(settingsPrefs.getString("theme_mode", null)),
+            themePalette = ThemePalette.fromId(settingsPrefs.getString("theme_palette", null)),
+        ),
+    )
+    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
     private var player: StemPlayer? = null
     private var livePlayer: LiveStemPlayer? = null
@@ -161,6 +177,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
+                cpuHistory = emptyList(),
+                gpuHistory = emptyList(),
+                inferenceHistory = emptyList(),
             )
         }
     }
@@ -193,6 +212,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
+                cpuHistory = emptyList(),
+                gpuHistory = emptyList(),
+                inferenceHistory = emptyList(),
             )
         }
     }
@@ -210,6 +232,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         selectedAcceleratorMode = mode
         prefs.edit().putString("accelerator_mode", mode.cacheId).apply()
         _state.update { it.copy(acceleratorMode = mode) }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        if (_settings.value.themeMode == mode) return
+        settingsPrefs.edit().putString("theme_mode", mode.name).apply()
+        _settings.update { it.copy(themeMode = mode) }
+    }
+
+    fun setThemePalette(palette: ThemePalette) {
+        if (_settings.value.themePalette == palette) return
+        settingsPrefs.edit().putString("theme_palette", palette.name).apply()
+        _settings.update { it.copy(themePalette = palette) }
     }
 
     fun start() {
@@ -261,6 +295,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 inferenceAverageMillis = 0,
                 inferenceChunks = 0,
                 workerThreads = 0,
+                cpuHistory = emptyList(),
+                gpuHistory = emptyList(),
+                inferenceHistory = emptyList(),
                 message = null,
             )
         }
@@ -441,6 +478,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             .getString(SeparationWorker.KEY_FALLBACK_REASON)
                             ?.takeIf { it.isNotBlank() }
                         _state.update {
+                            val inferenceAverage = info.progress.getLong(
+                                SeparationWorker.KEY_INFERENCE_MS,
+                                it.inferenceAverageMillis,
+                            )
+                            val inferenceChunks = info.progress.getInt(
+                                SeparationWorker.KEY_INFERENCE_CHUNKS,
+                                it.inferenceChunks,
+                            )
+                            val inferenceHistory =
+                                if (inferenceChunks > it.inferenceChunks && inferenceAverage > 0) {
+                                    (it.inferenceHistory + inferenceAverage.toFloat())
+                                        .takeLast(MAX_STATS_HISTORY)
+                                } else {
+                                    it.inferenceHistory
+                                }
                             it.copy(
                                 running = true,
                                 phase = info.progress.getString(SeparationWorker.KEY_PHASE)
@@ -451,14 +503,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 ),
                                 effectiveBackend = effective ?: it.effectiveBackend,
                                 fallbackReason = fallback ?: it.fallbackReason,
-                                inferenceAverageMillis = info.progress.getLong(
-                                    SeparationWorker.KEY_INFERENCE_MS,
-                                    it.inferenceAverageMillis,
-                                ),
-                                inferenceChunks = info.progress.getInt(
-                                    SeparationWorker.KEY_INFERENCE_CHUNKS,
-                                    it.inferenceChunks,
-                                ),
+                                inferenceAverageMillis = inferenceAverage,
+                                inferenceChunks = inferenceChunks,
+                                inferenceHistory = inferenceHistory,
                                 workerThreads = info.progress.getInt(
                                     SeparationWorker.KEY_WORKER_THREADS,
                                     it.workerThreads,
@@ -627,12 +674,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statsSampler.reset()
         statsJob = viewModelScope.launch {
             while (isActive) {
-                delay(1_000)
+                delay(750)
                 val sample = withContext(Dispatchers.IO) { statsSampler.sample() }
                 _state.update {
+                    val cpu = sample.cpuPercent
+                    val gpu = sample.gpuPercent
                     it.copy(
-                        cpuUsagePercent = sample.cpuPercent,
-                        gpuUsagePercent = sample.gpuPercent,
+                        cpuUsagePercent = cpu ?: it.cpuUsagePercent,
+                        gpuUsagePercent = gpu ?: it.gpuUsagePercent,
+                        cpuHistory = if (cpu != null) {
+                            (it.cpuHistory + cpu).takeLast(MAX_STATS_HISTORY)
+                        } else {
+                            it.cpuHistory
+                        },
+                        gpuHistory = if (gpu != null) {
+                            (it.gpuHistory + gpu).takeLast(MAX_STATS_HISTORY)
+                        } else {
+                            it.gpuHistory
+                        },
                     )
                 }
             }

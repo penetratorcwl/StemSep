@@ -12,7 +12,7 @@ StemSep is an Android prototype for on-device vocal/instrumental separation.
 - Debug application ID: `app.stemsep.debug`
 - Min SDK: 26
 - Compile/target SDK: 36
-- UI: Kotlin + Jetpack Compose + Material 3, dark theme
+- UI: Kotlin + Jetpack Compose + Material 3; System/Light/Dark modes and Material You/Violet/Teal/Graphite palettes
 - Separation: UVR MDX-Net ONNX models, stereo 44.1 kHz
 
 The separation engine is intentionally separated from the UI so it can later be reused by BitChord.
@@ -67,7 +67,10 @@ Important files:
 - `app/src/main/kotlin/app/stemsep/ui/MainViewModel.kt`
 - `app/src/main/kotlin/app/stemsep/ui/ComputeStatsSampler.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
+- `app/src/main/kotlin/app/stemsep/ui/StemSepRoot.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
+- `app/src/main/kotlin/app/stemsep/ui/SettingsScreen.kt`
+- `app/src/main/kotlin/app/stemsep/ui/theme/Theme.kt`
 - `.github/workflows/android.yml`
 
 ## Build and test commands
@@ -110,19 +113,12 @@ Cache key:
 
 ## Models
 
-Default: `mdx-9482` (`UVR_MDXNET_9482`)
+Default and only catalog model: `mdx-9482` (`UVR_MDXNET_9482`)
 
 - 29,704,436 bytes
 - SHA-256 `f4f365207c56deb115bceedff3ad8fe98a751c745f9e370cecec6226b8b47184`
 - Tensor `[1, 4, 2048, 256]`
 - fft 6144, trim 3072, compensation 1.035, overlap 0.10
-
-Optional: `kim-vocal-2` (`Kim_Vocal_2`)
-
-- 66,759,214 bytes
-- SHA-256 `ce74ef3b6a6024ce44211a07be9cf8bc6d87728cc852a68ab34eb8e58cde9c8b`
-- Tensor `[1, 4, 3072, 256]`
-- fft 7680, trim 3840, compensation 1.009, overlap 0.10
 
 Never commit `.onnx` files or other model weights. Downloads must use HTTPS and the pinned SHA-256.
 
@@ -142,8 +138,8 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - CPU: ONNX Runtime CPU EP with a user-selectable intra-op thread count (default 4, capped at reported cores) and one inter-op thread. This is the default and the existing benchmark path.
 - Snapdragon GPU/NPU: Android NNAPI EP, gated by Qualcomm Snapdragon + `arm64-v8a` + API 27+. It requests FP16; the Android/Qualcomm driver decides whether GPU, NPU or CPU handles each node.
 - NNAPI Balanced mode retries on CPU if session creation fails. Accelerator-only mode adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
-- Compute stats show process CPU share and average inference time. GPU sysfs busy values are best-effort; Android does not expose reliable GPU/NPU utilization or core counts.
-- QNN HTP is not enabled. The current models are float32; QNN HTP requires quantized models and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
+- Compute stats show process CPU share, average inference time and best-effort GPU sysfs values as rolling sparklines; tapping a metric opens a detail bottom sheet. Android does not expose reliable GPU/NPU utilization or core counts.
+- QNN HTP is not enabled. The current model is float32; QNN HTP requires a quantized model and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
 - See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or cache keys.
 
 ## Android/UI invariants
@@ -160,7 +156,9 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - GPU and NPU are not separate options: NNAPI delegates to the Qualcomm driver. Show requested/effective backend and fallback reason; do not claim a specific NPU/GPU placement.
 - CPU thread count is a real setting (1..reported cores). GPU/NPU core count is not controllable through NNAPI; the Accelerator-only policy only disables CPU fallback.
 - Compute stats sampling must stay off the main thread. Do not present sysfs GPU values as guaranteed.
-- The app uses the AndroidX splash screen and a short Compose fade/slide entrance; keep the post-splash theme pointing at `Theme.StemSep`.
+- The app uses the AndroidX splash screen, then a Compose X-style launch zoom (icon scales beyond the screen and fades to reveal the UI); keep the post-splash theme pointing at `Theme.StemSep`.
+- Theme preferences are stored in `stemsep-settings`; Material You uses dynamic colors on API 31+ and falls back to Violet below that.
+- The main/settings screen crossfade and the stats detail sheet use Compose Material 3; keep the bottom sheet swipe-dismissible.
 
 ## Release process
 
@@ -189,7 +187,8 @@ Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNIN
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
 - Stable signing: CI run `40400420284` passed; certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
 - Compute controls/stats/UI/splash: CI run `40400848607` passed; the APK verified with the stable certificate.
-- Runtime on a physical phone: live preview, NNAPI, fallback, compute stats and splash timing are not yet verified on a device.
+- Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom: latest changes; CI verification pending.
+- Runtime on a physical phone: live preview, NNAPI, fallback, compute stats, charts, theme switching and launch timing are not yet verified on a device.
 - Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, no reliable GPU/NPU utilization, cache in `cacheDir`.
 - Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.
 

@@ -106,7 +106,7 @@ jobs:
           APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)"
           test -n "$APK"
           cp "$APK" "$RUNNER_TEMP/StemSep-debug.apk"
-          NOTES="Automatic debug build from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Package: app.stemsep.debug. Stable signing key; if updating from an older build, uninstall app.stemsep.debug once. CPU inference is default with configurable worker threads; Snapdragon GPU/NPU via NNAPI is experimental and offers balanced or accelerator-only CPU fallback. Live separated vocals are available while separation runs, with requested/active backend, fallback status and compute statistics in the UI. The first separation downloads the selected ONNX model."
+          NOTES="Automatic debug build from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Package: app.stemsep.debug. Stable signing key; if updating from an older build, uninstall app.stemsep.debug once. One UVR_MDXNET_9482 model. CPU inference is default with configurable worker threads; Snapdragon GPU/NPU via NNAPI is experimental with an inline CPU-fallback switch. Live separated vocals are available while separation runs. Compute stats have mini charts and a swipe-dismiss detail sheet; Settings offers System/Light/Dark modes and Material You, Violet, Teal and Graphite palettes. The first separation downloads the model."
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload latest "$RUNNER_TEMP/StemSep-debug.apk" \
               --repo "$GITHUB_REPOSITORY" --clobber

@@ -21,7 +21,7 @@
 
 ### `:separation`
 
-- `ModelCatalog` contains the two supported models and their exact inference configs.
+- `ModelCatalog` contains the supported model and its exact inference config.
 - `ModelDownloader` downloads with a fallback URL, verifies byte length and SHA-256, and writes atomically.
 - `AudioDecoder` uses `MediaExtractor` + `MediaCodec` and emits interleaved stereo float PCM at 44.1 kHz.
 - `ComputeBackend` and `ComputeCapabilityDetector` model CPU vs Snapdragon NNAPI support.
@@ -37,11 +37,13 @@
 
 - `StemSepApp` creates the singleton `AppContainer`.
 - `AppContainer` owns `StemCache`, `SeparationPipeline` and `StemExporter`.
-- `MainActivity` installs the AndroidX splash screen, hosts Compose and requests `POST_NOTIFICATIONS` on API 33+.
-- `MainViewModel` exposes `UiState`, persists compute settings, observes WorkManager, samples CPU/GPU stats, owns the live/final players and export coroutine.
+- `MainActivity` installs the AndroidX splash screen, hosts Compose, applies the selected theme and requests `POST_NOTIFICATIONS` on API 33+.
+- `MainViewModel` exposes `UiState` and `AppSettings`, persists compute and theme settings, observes WorkManager, keeps rolling CPU/GPU/inference histories, owns the live/final players and export coroutine.
 - `ComputeStatsSampler` samples process CPU usage and best-effort Qualcomm GPU sysfs values off the main thread.
 - `SeparationWorker` is a `CoroutineWorker` with a data-sync foreground notification; it forwards live-preview metadata, backend status and inference statistics through WorkManager progress.
-- `StemSepScreen` is the Material 3 dark UI: source, model, compute settings, compute stats, progress, live stem preview, final stem player and export. It has a splash handoff and a short fade/slide entrance animation.
+- `StemSepRoot` hosts the main screen/settings crossfade and the X-style launch zoom overlay.
+- `StemSepScreen` is the Material 3 main UI: source, model, compute settings, stats with sparklines and a detail bottom sheet, progress, live stem preview, final stem player and export.
+- `SettingsScreen` selects System/Light/Dark mode and Material You/Violet/Teal/Graphite palettes; preferences are stored in `stemsep-settings`.
 
 ## Separation flow
 
@@ -66,7 +68,7 @@
 
 ## DSP contract
 
-All models are stereo, 44.1 kHz MDX-Net models.
+The catalog model is stereo 44.1 kHz MDX-Net.
 
 - Periodic Hann window.
 - `center = true` with reflect padding of `n_fft / 2`.
@@ -88,10 +90,10 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - CPU is the default: ONNX Runtime CPU EP, one inter-op thread and a user-selectable intra-op thread count (default 4, capped at the reported core count).
 - `SNAPDRAGON_NNAPI` is offered only on Qualcomm Snapdragon, `arm64-v8a`, API 27+.
 - NNAPI requests FP16 and delegates operation placement to the Android/Qualcomm driver. The driver may use GPU, NPU or CPU per node.
-- Balanced mode retries on CPU if NNAPI session creation fails. Accelerator-only mode adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU.
+- The inline **Allow CPU fallback** switch maps to Balanced (on) or Accelerator-only (off). Balanced retries on CPU if NNAPI session creation fails; Accelerator-only adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU.
 - The Java API cannot report per-node fallback inside a successful NNAPI session.
-- The UI exposes CPU thread count and NNAPI accelerator policy. GPU/NPU core counts and reliable per-unit utilization are not available through NNAPI.
-- QNN HTP is not enabled because the current float32 models are not quantized; see [`COMPUTE_BACKENDS.md`](COMPUTE_BACKENDS.md).
+- The UI exposes CPU thread count and the NNAPI CPU-fallback switch. GPU/NPU core counts and reliable per-unit utilization are not available through NNAPI.
+- QNN HTP is not enabled because the current float32 model is not quantized; see [`COMPUTE_BACKENDS.md`](COMPUTE_BACKENDS.md).
 
 ## Cache invariants
 
@@ -117,6 +119,14 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - Live preview uses WorkManager progress keys `preview_vocals`, `preview_instrumental`, `preview_available`, `preview_total` and `preview_sample_rate`.
 - Compute progress uses `effective_backend`, `fallback_reason`, `inference_ms`, `inference_chunks` and `worker_threads`.
 
+## Themes and settings
+
+- `ThemeMode` is System, Light or Dark. System follows `isSystemInDarkTheme()`.
+- `ThemePalette` is Material You, Violet, Teal or Graphite. Material You uses dynamic system colors on API 31+ and falls back to Violet on older devices.
+- Theme preferences live in `SharedPreferences` under `stemsep-settings` and are exposed by `MainViewModel.settings`.
+- The app updates status/navigation bar icon appearance from the active Compose color scheme.
+- The launch overlay is a Compose zoom/fade of `ic_launcher_foreground`; it is shown once per Activity saved-state instance after the AndroidX splash.
+
 ## Export
 
 - The export directory is selected with `ActivityResultContracts.OpenDocumentTree`.
@@ -132,7 +142,7 @@ Model-specific values are in [`MODELS.md`](MODELS.md) and `ModelCatalog.kt`.
 - WorkManager cancellation maps to `isStopped`; the worker rethrows `CancellationException`.
 - The UI shows progress and phase strings from WorkManager progress data.
 - The notification is updated only when the phase or whole percentage changes.
-- CPU/GPU statistics are sampled once per second on `Dispatchers.IO` while a job runs; the sampler never touches UI state from a background thread.
+- CPU/GPU statistics are sampled every 750 ms on `Dispatchers.IO` while a job runs; the sampler never touches UI state from a background thread. The UI keeps 90 points for sparklines and the detail sheet.
 
 ## Important invariants for changes
 
