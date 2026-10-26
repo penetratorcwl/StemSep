@@ -15,12 +15,35 @@ enum class ComputeBackend(
     }
 }
 
+enum class AcceleratorMode(
+    val cacheId: String,
+    val displayName: String,
+    val description: String,
+) {
+    BALANCED(
+        "balanced",
+        "Balanced",
+        "NNAPI may use GPU, NPU or CPU per operation and may fall back to CPU.",
+    ),
+    ACCELERATOR_ONLY(
+        "accelerator",
+        "Accelerator only",
+        "Disables NNAPI CPU fallback. If the driver cannot run the model, the job fails instead of silently using CPU.",
+    );
+
+    companion object {
+        fun fromId(id: String?): AcceleratorMode =
+            entries.firstOrNull { it.cacheId == id } ?: BALANCED
+    }
+}
+
 data class ComputeCapabilities(
     val snapdragon: Boolean,
     val arm64: Boolean,
     val nnapi: Boolean,
     val socManufacturer: String,
     val socModel: String,
+    val cpuCores: Int,
 ) {
     val canUseSnapdragonNnapi: Boolean
         get() = snapdragon && arm64 && nnapi
@@ -55,6 +78,7 @@ object ComputeCapabilityDetector {
             nnapi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1,
             socManufacturer = manufacturer.orEmpty(),
             socModel = model.orEmpty(),
+            cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
         )
     }
 

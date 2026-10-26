@@ -28,6 +28,9 @@ data class SeparationProgress(
     val fraction: Float,
     val effectiveBackend: ComputeBackend? = null,
     val fallbackReason: String? = null,
+    val inferenceAverageMillis: Long = 0,
+    val inferenceChunks: Int = 0,
+    val workerThreads: Int = 0,
 )
 
 data class SeparationResult(
@@ -45,6 +48,8 @@ class SeparationPipeline(
         uri: Uri,
         model: ModelSpec,
         backend: ComputeBackend = ComputeBackend.CPU,
+        cpuThreads: Int = 4,
+        acceleratorMode: AcceleratorMode = AcceleratorMode.BALANCED,
         onProgress: (SeparationProgress) -> Unit = {},
         onPreview: (LiveStemPreview) -> Unit = {},
         isCancelled: () -> Boolean = { false },
@@ -52,7 +57,12 @@ class SeparationPipeline(
         val sourceInfo = readSourceInfo(uri)
         onProgress(SeparationProgress(SeparationPhase.HASHING, 0f))
         val sourceHash = hashSource(uri, sourceInfo.sizeBytes, onProgress, isCancelled)
-        val cacheKey = cache.keyFor(sourceHash, model.id, backend)
+        val cacheKey = cache.keyFor(
+            sourceHash = sourceHash,
+            modelId = model.id,
+            backend = backend,
+            profile = acceleratorMode.cacheId,
+        )
 
         cache.find(cacheKey)?.let { cached ->
             onProgress(SeparationProgress(SeparationPhase.FINALIZING, 1f))
@@ -85,6 +95,9 @@ class SeparationPipeline(
             var instrumentalFrames = 0L
             var effectiveBackend = backend
             var fallbackReason: String? = null
+            var finalInferenceAverage = 0L
+            var finalInferenceChunks = 0
+            var finalWorkerThreads = 0
             val vocalsFile = File(tempDirectory, StemCache.VOCALS_FILE)
             val instrumentalFile = File(tempDirectory, StemCache.INSTRUMENTAL_FILE)
             onPreview(
@@ -101,16 +114,20 @@ class SeparationPipeline(
                     FloatPcmFileWriter(instrumentalFile).use { instrumental ->
                         OnnxMdxEngine(
                             modelFile = modelFile,
+                            threads = cpuThreads,
                             requestedBackend = backend,
+                            acceleratorMode = acceleratorMode,
                         ).use { engine ->
                             effectiveBackend = engine.activeBackend
                             fallbackReason = engine.fallbackReason
+                            finalWorkerThreads = engine.effectiveThreads
                             onProgress(
                                 SeparationProgress(
                                     phase = SeparationPhase.SEPARATING,
                                     fraction = 0f,
                                     effectiveBackend = effectiveBackend,
                                     fallbackReason = fallbackReason,
+                                    workerThreads = engine.effectiveThreads,
                                 ),
                             )
                             MdxStreamingSeparator(
@@ -133,12 +150,18 @@ class SeparationPipeline(
                                             sampleRate = decoded.sampleRate,
                                         ),
                                     )
+                                    val stats = engine.stats()
+                                    finalInferenceAverage = stats.averageMillis
+                                    finalInferenceChunks = stats.chunks
                                     onProgress(
                                         SeparationProgress(
                                             phase = SeparationPhase.SEPARATING,
                                             fraction = fraction,
                                             effectiveBackend = effectiveBackend,
                                             fallbackReason = fallbackReason,
+                                            inferenceAverageMillis = stats.averageMillis,
+                                            inferenceChunks = stats.chunks,
+                                            workerThreads = engine.effectiveThreads,
                                         ),
                                     )
                                 },
@@ -175,6 +198,8 @@ class SeparationPipeline(
                 requestedBackend = backend.cacheId,
                 effectiveBackend = effectiveBackend.cacheId,
                 fallbackReason = fallbackReason,
+                cpuThreads = cpuThreads,
+                acceleratorMode = acceleratorMode.cacheId,
             )
             val stems = cache.commit(cacheKey, tempDirectory, metadata)
             committed = true
@@ -184,6 +209,9 @@ class SeparationPipeline(
                     fraction = 1f,
                     effectiveBackend = effectiveBackend,
                     fallbackReason = fallbackReason,
+                    inferenceAverageMillis = finalInferenceAverage,
+                    inferenceChunks = finalInferenceChunks,
+                    workerThreads = finalWorkerThreads,
                 ),
             )
             SeparationResult(stems, cached = false)

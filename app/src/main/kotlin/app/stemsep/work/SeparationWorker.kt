@@ -17,6 +17,7 @@ import androidx.work.workDataOf
 import app.stemsep.MainActivity
 import app.stemsep.R
 import app.stemsep.StemSepApp
+import app.stemsep.separation.AcceleratorMode
 import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.LiveStemPreview
 import app.stemsep.separation.ModelCatalog
@@ -33,6 +34,10 @@ class SeparationWorker(
             ?: return Result.failure(workDataOf(KEY_ERROR to "Missing input URI"))
         val model = ModelCatalog.byId(inputData.getString(KEY_MODEL_ID))
         val backend = ComputeBackend.fromId(inputData.getString(KEY_BACKEND))
+        val cpuThreads = inputData.getInt(KEY_CPU_THREADS, 4).coerceAtLeast(1)
+        val acceleratorMode = AcceleratorMode.fromId(
+            inputData.getString(KEY_ACCELERATOR_MODE),
+        )
         val pipeline = (applicationContext as StemSepApp).container.pipeline
 
         createChannel()
@@ -62,6 +67,9 @@ class SeparationWorker(
                     KEY_PREVIEW_AVAILABLE to (latestPreview?.availableFrames ?: 0L),
                     KEY_PREVIEW_TOTAL to (latestPreview?.totalFrames ?: 0L),
                     KEY_PREVIEW_SAMPLE_RATE to (latestPreview?.sampleRate ?: 0),
+                    KEY_INFERENCE_MS to progress.inferenceAverageMillis,
+                    KEY_INFERENCE_CHUNKS to progress.inferenceChunks,
+                    KEY_WORKER_THREADS to progress.workerThreads,
                 ),
             )
             val percent = (progress.fraction * 100).toInt()
@@ -77,6 +85,8 @@ class SeparationWorker(
                 uri = Uri.parse(uriString),
                 model = model,
                 backend = backend,
+                cpuThreads = cpuThreads,
+                acceleratorMode = acceleratorMode,
                 onProgress = { progress ->
                     publish(progress, latestPreview)
                 },
@@ -173,6 +183,8 @@ class SeparationWorker(
         const val KEY_INPUT_URI = "input_uri"
         const val KEY_MODEL_ID = "model_id"
         const val KEY_BACKEND = "backend"
+        const val KEY_CPU_THREADS = "cpu_threads"
+        const val KEY_ACCELERATOR_MODE = "accelerator_mode"
         const val KEY_PHASE = "phase"
         const val KEY_PROGRESS = "progress"
         const val KEY_EFFECTIVE_BACKEND = "effective_backend"
@@ -182,6 +194,9 @@ class SeparationWorker(
         const val KEY_PREVIEW_AVAILABLE = "preview_available"
         const val KEY_PREVIEW_TOTAL = "preview_total"
         const val KEY_PREVIEW_SAMPLE_RATE = "preview_sample_rate"
+        const val KEY_INFERENCE_MS = "inference_ms"
+        const val KEY_INFERENCE_CHUNKS = "inference_chunks"
+        const val KEY_WORKER_THREADS = "worker_threads"
         const val KEY_CACHE_KEY = "cache_key"
         const val KEY_ERROR = "error"
 

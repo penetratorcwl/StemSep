@@ -1,6 +1,7 @@
 package app.stemsep.ui
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -14,6 +15,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import app.stemsep.StemSepApp
 import app.stemsep.dsp.StemMode
+import app.stemsep.separation.AcceleratorMode
 import app.stemsep.separation.CachedStems
 import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ComputeCapabilities
@@ -24,12 +26,16 @@ import app.stemsep.separation.ModelCatalog
 import app.stemsep.separation.SeparationPhase
 import app.stemsep.separation.StemPlayer
 import app.stemsep.work.SeparationWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -38,6 +44,8 @@ data class UiState(
     val selectedName: String? = null,
     val modelId: String = ModelCatalog.DEFAULT_MODEL_ID,
     val backend: ComputeBackend = ComputeBackend.CPU,
+    val cpuThreads: Int = 4,
+    val acceleratorMode: AcceleratorMode = AcceleratorMode.BALANCED,
     val effectiveBackend: ComputeBackend? = null,
     val fallbackReason: String? = null,
     val workId: UUID? = null,
@@ -58,6 +66,11 @@ data class UiState(
     val liveSampleRate: Int = 44_100,
     val liveMode: StemMode = StemMode.VOCALS,
     val liveVocalLevel: Float = 1f,
+    val cpuUsagePercent: Float? = null,
+    val gpuUsagePercent: Float? = null,
+    val inferenceAverageMillis: Long = 0,
+    val inferenceChunks: Int = 0,
+    val workerThreads: Int = 0,
     val mode: StemMode = StemMode.MIX,
     val vocalLevel: Float = 1f,
     val exporting: Boolean = false,
@@ -69,13 +82,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as StemSepApp).container
     private val workManager = WorkManager.getInstance(application)
     val capabilities: ComputeCapabilities = ComputeCapabilityDetector.detect()
-    private val _state = MutableStateFlow(UiState())
+    private val prefs = application.getSharedPreferences("stemsep-compute", Context.MODE_PRIVATE)
+    private val defaultCpuThreads = capabilities.cpuCores.coerceAtMost(4).coerceAtLeast(1)
+    private var selectedCpuThreads = prefs
+        .getInt("cpu_threads", defaultCpuThreads)
+        .coerceIn(1, capabilities.cpuCores)
+    private var selectedAcceleratorMode = AcceleratorMode.fromId(
+        prefs.getString("accelerator_mode", null),
+    )
+    private val statsSampler = ComputeStatsSampler(capabilities.cpuCores)
+    private val _state = MutableStateFlow(
+        UiState(
+            cpuThreads = selectedCpuThreads,
+            acceleratorMode = selectedAcceleratorMode,
+        ),
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var player: StemPlayer? = null
     private var livePlayer: LiveStemPlayer? = null
     private var liveKey: String? = null
     private var observeJob: Job? = null
+    private var statsJob: Job? = null
 
     fun selectAudio(uri: Uri?) {
         if (uri == null) return
@@ -88,6 +116,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         workManager.cancelAllWorkByTag(SeparationWorker.WORK_TAG)
         observeJob?.cancel()
+        stopStatsSampler()
         releasePlayer()
         releaseLivePreview()
         _state.value = UiState(
@@ -95,6 +124,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedName = displayName(uri),
             modelId = _state.value.modelId,
             backend = _state.value.backend,
+            cpuThreads = _state.value.cpuThreads,
+            acceleratorMode = _state.value.acceleratorMode,
             effectiveBackend = if (_state.value.backend == ComputeBackend.CPU) {
                 ComputeBackend.CPU
             } else {
@@ -156,6 +187,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setCpuThreads(threads: Int) {
+        if (_state.value.running) return
+        val value = threads.coerceIn(1, capabilities.cpuCores)
+        selectedCpuThreads = value
+        prefs.edit().putInt("cpu_threads", value).apply()
+        _state.update { it.copy(cpuThreads = value) }
+    }
+
+    fun setAcceleratorMode(mode: AcceleratorMode) {
+        if (_state.value.running) return
+        selectedAcceleratorMode = mode
+        prefs.edit().putString("accelerator_mode", mode.cacheId).apply()
+        _state.update { it.copy(acceleratorMode = mode) }
+    }
+
     fun start() {
         val current = _state.value
         val uri = current.selectedUri ?: return
@@ -164,12 +210,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         releaseLivePreview()
         observeJob?.cancel()
         val model = ModelCatalog.byId(current.modelId)
+        val acceleratorMode = if (current.backend == ComputeBackend.CPU) {
+            AcceleratorMode.BALANCED
+        } else {
+            current.acceleratorMode
+        }
         val request = OneTimeWorkRequestBuilder<SeparationWorker>()
             .setInputData(
                 workDataOf(
                     SeparationWorker.KEY_INPUT_URI to uri.toString(),
                     SeparationWorker.KEY_MODEL_ID to model.id,
                     SeparationWorker.KEY_BACKEND to current.backend.cacheId,
+                    SeparationWorker.KEY_CPU_THREADS to current.cpuThreads,
+                    SeparationWorker.KEY_ACCELERATOR_MODE to acceleratorMode.cacheId,
                 ),
             )
             .addTag(SeparationWorker.WORK_TAG)
@@ -193,9 +246,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     null
                 },
                 fallbackReason = null,
+                cpuUsagePercent = null,
+                gpuUsagePercent = null,
+                inferenceAverageMillis = 0,
+                inferenceChunks = 0,
+                workerThreads = 0,
                 message = null,
             )
         }
+        startStatsSampler()
         workManager.enqueueUniqueWork(
             SeparationWorker.WORK_NAME,
             ExistingWorkPolicy.REPLACE,
@@ -207,6 +266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancel() {
         val id = _state.value.workId ?: return
         workManager.cancelWorkById(id)
+        stopStatsSampler()
         releaseLivePreview()
         _state.update {
             it.copy(
@@ -348,6 +408,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         observeJob?.cancel()
+        stopStatsSampler()
         releasePlayer()
         releaseLivePreview()
         super.onCleared()
@@ -380,11 +441,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 ),
                                 effectiveBackend = effective ?: it.effectiveBackend,
                                 fallbackReason = fallback ?: it.fallbackReason,
+                                inferenceAverageMillis = info.progress.getLong(
+                                    SeparationWorker.KEY_INFERENCE_MS,
+                                    it.inferenceAverageMillis,
+                                ),
+                                inferenceChunks = info.progress.getInt(
+                                    SeparationWorker.KEY_INFERENCE_CHUNKS,
+                                    it.inferenceChunks,
+                                ),
+                                workerThreads = info.progress.getInt(
+                                    SeparationWorker.KEY_WORKER_THREADS,
+                                    it.workerThreads,
+                                ),
                             )
                         }
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
+                        stopStatsSampler()
                         releaseLivePreview()
                         _state.update {
                             it.copy(
@@ -403,6 +477,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     WorkInfo.State.FAILED -> {
+                        stopStatsSampler()
                         releaseLivePreview()
                         val message = info.outputData.getString(SeparationWorker.KEY_ERROR)
                             ?: "Separation failed"
@@ -410,6 +485,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     WorkInfo.State.CANCELLED -> {
+                        stopStatsSampler()
                         releaseLivePreview()
                         _state.update { it.copy(running = false, phase = "CANCELLED") }
                     }
@@ -522,6 +598,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 backend = ComputeBackend.fromId(stems.metadata.requestedBackend),
                 effectiveBackend = ComputeBackend.fromId(stems.metadata.effectiveBackend),
                 fallbackReason = stems.metadata.fallbackReason,
+                acceleratorMode = AcceleratorMode.fromId(stems.metadata.acceleratorMode),
                 playerReady = true,
                 durationFrames = stems.metadata.frameCount,
                 positionFrames = 0,
@@ -530,6 +607,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 vocalLevel = 1f,
             )
         }
+    }
+
+    private fun startStatsSampler() {
+        statsJob?.cancel()
+        statsSampler.reset()
+        statsJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1_000)
+                val sample = withContext(Dispatchers.IO) { statsSampler.sample() }
+                _state.update {
+                    it.copy(
+                        cpuUsagePercent = sample.cpuPercent,
+                        gpuUsagePercent = sample.gpuPercent,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stopStatsSampler() {
+        statsJob?.cancel()
+        statsJob = null
     }
 
     private fun releaseLivePreview() {

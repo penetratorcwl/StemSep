@@ -15,6 +15,8 @@ data class StemMetadata(
     val requestedBackend: String,
     val effectiveBackend: String,
     val fallbackReason: String? = null,
+    val cpuThreads: Int = 4,
+    val acceleratorMode: String = AcceleratorMode.BALANCED.cacheId,
 )
 
 data class CachedStems(
@@ -32,7 +34,8 @@ class StemCache(context: Context) {
         sourceHash: String,
         modelId: String,
         backend: ComputeBackend = ComputeBackend.CPU,
-    ): String = "$sourceHash-$modelId-${backend.cacheId}-v${ModelCatalog.SEPARATOR_VERSION}"
+        profile: String = AcceleratorMode.BALANCED.cacheId,
+    ): String = "$sourceHash-$modelId-${backend.cacheId}-$profile-v${ModelCatalog.SEPARATOR_VERSION}"
 
     fun find(key: String): CachedStems? {
         val directory = File(root, key)
@@ -60,6 +63,11 @@ class StemCache(context: Context) {
                 ),
                 fallbackReason = json.optString("fallbackReason")
                     .takeIf { it.isNotBlank() },
+                cpuThreads = json.optInt("cpuThreads", 4),
+                acceleratorMode = json.optString(
+                    "acceleratorMode",
+                    AcceleratorMode.BALANCED.cacheId,
+                ),
             )
         }.getOrNull() ?: return null
 
@@ -109,6 +117,8 @@ class StemCache(context: Context) {
             .put("requestedBackend", metadata.requestedBackend)
             .put("effectiveBackend", metadata.effectiveBackend)
             .put("fallbackReason", metadata.fallbackReason ?: "")
+            .put("cpuThreads", metadata.cpuThreads)
+            .put("acceleratorMode", metadata.acceleratorMode)
         File(directory, META_FILE).writeText(json.toString())
     }
 

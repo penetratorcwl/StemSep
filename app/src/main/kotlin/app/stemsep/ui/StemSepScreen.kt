@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -38,18 +40,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.stemsep.dsp.StemMode
+import app.stemsep.separation.AcceleratorMode
 import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ComputeCapabilities
 import app.stemsep.separation.ExportFormat
@@ -82,6 +87,23 @@ fun StemSepScreen(viewModel: MainViewModel) {
             viewModel.export(pendingFormat, uri)
         }
     }
+    var contentVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { contentVisible = true }
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (contentVisible) 1f else 0f,
+        animationSpec = tween(450),
+        label = "contentAlpha",
+    )
+    val contentOffset by animateFloatAsState(
+        targetValue = if (contentVisible) 0f else 28f,
+        animationSpec = tween(450),
+        label = "contentOffset",
+    )
+    val logoScale by animateFloatAsState(
+        targetValue = if (contentVisible) 1f else 0.7f,
+        animationSpec = tween(600),
+        label = "logoScale",
+    )
 
     Scaffold(
         topBar = {
@@ -92,9 +114,22 @@ fun StemSepScreen(viewModel: MainViewModel) {
                             imageVector = Icons.Default.GraphicEq,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(30.dp)
+                                .graphicsLayer {
+                                    scaleX = logoScale
+                                    scaleY = logoScale
+                                },
                         )
                         Spacer(Modifier.width(10.dp))
-                        Text("StemSep", fontWeight = FontWeight.SemiBold)
+                        Column {
+                            Text("StemSep", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "On-device vocal isolation",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 },
             )
@@ -104,6 +139,10 @@ fun StemSepScreen(viewModel: MainViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .graphicsLayer {
+                    alpha = contentAlpha
+                    translationY = contentOffset
+                }
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -116,14 +155,26 @@ fun StemSepScreen(viewModel: MainViewModel) {
 
             ModelCard(
                 selectedModelId = state.modelId,
+                enabled = !state.running,
+                onSelect = viewModel::selectModel,
+            )
+
+            ComputeCard(
                 selectedBackend = state.backend,
+                cpuThreads = state.cpuThreads,
+                acceleratorMode = state.acceleratorMode,
                 effectiveBackend = state.effectiveBackend,
                 fallbackReason = state.fallbackReason,
                 capabilities = viewModel.capabilities,
                 enabled = !state.running,
-                onSelect = viewModel::selectModel,
                 onSelectBackend = viewModel::selectBackend,
+                onCpuThreads = viewModel::setCpuThreads,
+                onAcceleratorMode = viewModel::setAcceleratorMode,
             )
+
+            if (state.running || state.cached != null || state.inferenceChunks > 0) {
+                StatsCard(state = state, capabilities = viewModel.capabilities)
+            }
 
             if (state.running) {
                 ProgressCard(
@@ -207,13 +258,8 @@ private fun SourceCard(
 @Composable
 private fun ModelCard(
     selectedModelId: String,
-    selectedBackend: ComputeBackend,
-    effectiveBackend: ComputeBackend?,
-    fallbackReason: String?,
-    capabilities: ComputeCapabilities,
     enabled: Boolean,
     onSelect: (String) -> Unit,
-    onSelectBackend: (ComputeBackend) -> Unit,
 ) {
     val selected = ModelCatalog.byId(selectedModelId)
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -242,10 +288,29 @@ private fun ModelCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+}
 
-            HorizontalDivider()
-
-            Text("Compute", style = MaterialTheme.typography.labelLarge)
+@Composable
+private fun ComputeCard(
+    selectedBackend: ComputeBackend,
+    cpuThreads: Int,
+    acceleratorMode: AcceleratorMode,
+    effectiveBackend: ComputeBackend?,
+    fallbackReason: String?,
+    capabilities: ComputeCapabilities,
+    enabled: Boolean,
+    onSelectBackend: (ComputeBackend) -> Unit,
+    onCpuThreads: (Int) -> Unit,
+    onAcceleratorMode: (AcceleratorMode) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Compute", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ComputeBackend.entries.forEach { backend ->
                     FilterChip(
@@ -259,15 +324,67 @@ private fun ModelCard(
             Text(
                 text = when {
                     selectedBackend == ComputeBackend.CPU ->
-                        "Runs on the ARM CPU with ONNX Runtime (4 intra-op threads)."
+                        "CPU inference uses ONNX Runtime. More worker threads can speed up separation but use more battery and heat."
                     capabilities.canUseSnapdragonNnapi ->
-                        "Snapdragon ${capabilities.socLabel}: NNAPI lets the Qualcomm driver choose GPU, NPU or CPU per operation. GPU and NPU are not separate switches."
+                        "Snapdragon ${capabilities.socLabel}: NNAPI is one backend. The Qualcomm driver chooses GPU, NPU or CPU per operation; GPU and NPU are not separate switches."
                     else ->
                         "Snapdragon acceleration is unavailable on this device; CPU is used."
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
+
+            Text(
+                text = "CPU worker threads: $cpuThreads of ${capabilities.cpuCores}",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            if (capabilities.cpuCores > 1) {
+                Slider(
+                    value = cpuThreads.toFloat(),
+                    onValueChange = { onCpuThreads(it.roundToInt()) },
+                    valueRange = 1f..capabilities.cpuCores.toFloat(),
+                    steps = (capabilities.cpuCores - 2).coerceAtLeast(0),
+                    enabled = enabled,
+                )
+                Text(
+                    text = "More threads use more CPU capacity; fewer threads leave more headroom for playback and the rest of the device.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                Text(
+                    text = "This device reports one CPU core.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            if (selectedBackend == ComputeBackend.SNAPDRAGON_NNAPI) {
+                HorizontalDivider()
+                Text("GPU / NPU policy", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AcceleratorMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = acceleratorMode == mode,
+                            onClick = { onAcceleratorMode(mode) },
+                            enabled = enabled,
+                            label = { Text(mode.displayName) },
+                        )
+                    }
+                }
+                Text(
+                    text = acceleratorMode.description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = "NNAPI does not expose a GPU/NPU core count or per-unit utilization. Android reports placement only indirectly through the active backend.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            HorizontalDivider()
             Text(
                 text = "Requested: ${selectedBackend.displayName}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -296,6 +413,95 @@ private fun ModelCard(
 }
 
 @Composable
+private fun StatsCard(
+    state: UiState,
+    capabilities: ComputeCapabilities,
+) {
+    val active = state.effectiveBackend ?: state.backend
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Compute stats", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = if (state.running) "live" else "last run",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            MetricRow(
+                label = "CPU",
+                value = state.cpuUsagePercent?.let { "${it.roundToInt()}%" } ?: "—",
+                detail = "${state.workerThreads.takeIf { it > 0 } ?: state.cpuThreads} of ${capabilities.cpuCores} worker threads",
+            )
+            MetricRow(
+                label = "GPU",
+                value = state.gpuUsagePercent?.let { "${it.roundToInt()}%" }
+                    ?: if (active == ComputeBackend.SNAPDRAGON_NNAPI) "driver-managed" else "—",
+                detail = if (active == ComputeBackend.SNAPDRAGON_NNAPI) {
+                    "NNAPI may place operations on the GPU"
+                } else {
+                    "GPU acceleration not requested"
+                },
+            )
+            MetricRow(
+                label = "NPU",
+                value = if (active == ComputeBackend.SNAPDRAGON_NNAPI) "driver-managed" else "off",
+                detail = if (active == ComputeBackend.SNAPDRAGON_NNAPI) {
+                    "NNAPI may place operations on the NPU"
+                } else {
+                    "QNN HTP requires quantized models"
+                },
+            )
+            MetricRow(
+                label = "Inference",
+                value = if (state.inferenceChunks > 0) {
+                    "${state.inferenceAverageMillis} ms/chunk"
+                } else {
+                    "—"
+                },
+                detail = "${state.inferenceChunks} completed chunks",
+            )
+            Text(
+                text = "CPU is this process's share of total CPU capacity. Android does not provide public GPU/NPU utilization counters; NNAPI decides placement per operation.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MetricRow(
+    label: String,
+    value: String,
+    detail: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = detail,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(value, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+@Composable
 private fun LivePreviewCard(
     state: UiState,
     onToggle: () -> Unit,
@@ -314,6 +520,13 @@ private fun LivePreviewCard(
             Text(
                 text = "${formatTime(position, state.liveSampleRate)} / ${formatTime(total, state.liveSampleRate)} · buffered ${formatTime(state.liveAvailableFrames, state.liveSampleRate)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LinearProgressIndicator(
+                progress = {
+                    if (total <= 0) 0f
+                    else (state.liveAvailableFrames.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                },
+                modifier = Modifier.fillMaxWidth(),
             )
             Slider(
                 value = position.toFloat(),
