@@ -187,7 +187,7 @@ Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNIN
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
 - Stable signing: CI run `40400420284` passed; certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
 - Compute controls/stats/UI/splash: CI run `40400848607` passed; the APK verified with the stable certificate.
-- Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom: latest changes; CI verification pending.
+- Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom: CI run `40406906028` passed; the APK verified with the stable certificate.
 - Runtime on a physical phone: live preview, NNAPI, fallback, compute stats, charts, theme switching and launch timing are not yet verified on a device.
 - Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, no reliable GPU/NPU utilization, cache in `cacheDir`.
 - Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.

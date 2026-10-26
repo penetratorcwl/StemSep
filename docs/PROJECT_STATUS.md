@@ -39,6 +39,7 @@ Last updated: 2026-10-26
 - CI runs `40396988552` and `40397551805` passed both jobs, including `:separation:testDebugUnitTest` and `:app:assembleDebug`.
 - Stable signing passed CI run `40400420284`; `apksigner` reports certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
 - Compute controls, stats, splash and UI changes passed CI run `40400848607`; the APK also verified with the stable certificate.
+- Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom passed CI run `40406906028`; the APK verified with the stable certificate and the `latest` release asset is `137,451,530` bytes.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
 - Live-preview code compiles in CI; it has not been runtime-tested on a device yet.
 
