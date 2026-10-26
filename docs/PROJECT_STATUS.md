@@ -29,7 +29,8 @@ Last updated: 2026-10-26
 - Backend detection and backend-ID parsing have JVM tests.
 - GitHub Actions `test` job passes.
 - GitHub Actions `build` job passes and produces a debug APK.
-- The release workflow attached `StemSep-debug.apk` to the `latest` release; the asset was downloaded and checked through `gh release download`.
+- The release workflow attached `StemSep-debug.apk` to the `latest` release; the current asset is 137,331,086 bytes and was downloaded and checked through `gh release download`.
+- CI run `40387537046` passed both jobs, including `:separation:testDebugUnitTest` and `:app:assembleDebug`.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
 
 ## Not yet verified on a physical device

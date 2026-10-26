@@ -174,7 +174,7 @@ The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not co
 
 - DSP: 7/7 local JUnit tests pass.
 - Backend detection/ID parsing: JVM unit tests added; CI runs `:separation:testDebugUnitTest`.
-- CI: DSP test, separation tests and debug APK build pass (verify the latest run after changes).
+- CI: DSP test, separation tests and debug APK build pass in run `40387537046` (re-check after changes).
 - Release: latest debug APK is published on GitHub Releases.
 - Runtime on a physical phone: source preview, NNAPI and fallback are not yet verified on a device.
 - Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, debug signing only, cache in `cacheDir`.
