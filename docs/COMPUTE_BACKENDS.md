@@ -50,10 +50,10 @@ Android NNAPI is a system API, not a direct GPU or NPU API. The Qualcomm NNAPI d
 
 GPU and NPU are therefore one UI option, not two switches. The UI reports the requested and active provider; it cannot report which individual nodes ran on GPU versus NPU.
 
-The engine attempts the requested backend and, in Balanced mode, retries with CPU if session creation fails. The failure message is stored as `fallbackReason`, sent through WorkManager progress and persisted in `meta.json`. The UI shows:
+The engine attempts the requested backend and, in Balanced mode, retries with CPU if session creation fails. The failure message is stored as `fallbackReason`, sent through WorkManager progress and returned in the completed session metadata. The UI shows:
 
 - **Requested** — the backend chip selected by the user;
-- **Active** — `engine.activeBackend` while running, or the cached effective backend;
+- **Active** — `engine.activeBackend` while running, or the effective backend of the current completed session;
 - **Fallback** — the exception message when NNAPI session creation failed.
 
 If ORT falls back per operation inside a successful NNAPI session, the active backend remains `nnapi` and no fallback reason is available; this is a limitation of the Java API.
@@ -80,19 +80,11 @@ CPU, GPU and inference rows keep a short rolling history and show a mini sparkli
 
 GPU/NPU utilization and core counts are not available through a stable Android API. Do not present the sysfs value as guaranteed; SELinux or a different driver may hide it. A low GPU reading can mean NNAPI placed the work on the CPU or NPU, or that the driver does not expose a useful busy counter.
 
-## Cache impact
+## Repeated runs
 
-The cache key includes the requested backend and accelerator profile:
+Separated stems are not cached or reused. Every separation starts from a fresh temporary session, even when the source, model, backend and accelerator profile are unchanged. The completed session metadata stores `requestedBackend`, `effectiveBackend`, optional `fallbackReason`, `cpuThreads` and `acceleratorMode` for the UI, but it is not a lookup key.
 
-```text
-<source-sha256>-<model-id>-<requested-backend>-<profile>-v<separator-version>
-```
-
-`SEPARATOR_VERSION` is `3`. The profile is `balanced` or `accelerator`; CPU always uses `balanced`. Metadata stores `requestedBackend`, `effectiveBackend`, optional `fallbackReason`, `cpuThreads` and `acceleratorMode`. Cache entries created before this format are ignored.
-
-The CPU thread count is not part of the key because it does not change the generated audio. The accelerator profile is part of the key because Accelerator only deliberately disables CPU fallback.
-
-A NNAPI session that fell back to CPU is still cached under the requested NNAPI key, while its metadata records the CPU effective backend. This avoids a second expensive run after the fallback, but a future NNAPI attempt can receive that cache hit without retrying NNAPI. Clear the app cache or change the source/model/backend/profile to force a new attempt.
+This means a NNAPI session that fell back to CPU is retried on the next run instead of being served from an earlier CPU result. Export the stems before starting another separation or leaving the app if the result should be kept.
 
 ## Why there is no QNN HTP backend yet
 

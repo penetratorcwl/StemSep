@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -180,13 +181,13 @@ fun StemSepScreen(
         ) {
             SourceCard(
                 selectedName = state.selectedName,
-                enabled = !state.running,
+                enabled = !state.running && !state.exporting,
                 onChoose = { audioPicker.launch(arrayOf("audio/*")) },
             )
 
             ModelCard(
                 selectedModelId = state.modelId,
-                enabled = !state.running,
+                enabled = !state.running && !state.exporting,
                 onSelect = viewModel::selectModel,
             )
 
@@ -198,14 +199,14 @@ fun StemSepScreen(
                 effectiveBackend = state.effectiveBackend,
                 fallbackReason = state.fallbackReason,
                 capabilities = viewModel.capabilities,
-                enabled = !state.running,
+                enabled = !state.running && !state.exporting,
                 onSelectBackend = viewModel::selectBackend,
                 onCpuThreads = viewModel::setCpuThreads,
                 onAutoCpuThreads = viewModel::setAutoCpuThreads,
                 onAcceleratorMode = viewModel::setAcceleratorMode,
             )
 
-            if (state.running || state.cached != null || state.inferenceChunks > 0) {
+            if (state.running || state.stems != null || state.inferenceChunks > 0) {
                 StatsCard(
                     state = state,
                     capabilities = viewModel.capabilities,
@@ -233,7 +234,7 @@ fun StemSepScreen(
                 Button(
                     onClick = viewModel::start,
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = state.selectedUri != null,
+                    enabled = state.selectedUri != null && !state.exporting,
                 ) {
                     Icon(Icons.Default.MusicNote, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
@@ -248,7 +249,7 @@ fun StemSepScreen(
                 MessageCard(message = message, onDismiss = viewModel::clearMessage)
             }
 
-            val stems = state.cached
+            val stems = state.stems
             if (state.playerReady && stems != null) {
                 PlayerCard(
                     viewModel = viewModel,
@@ -1158,6 +1159,7 @@ private fun PlayerCard(
     onExportClick: (ExportFormat) -> Unit,
 ) {
     var exportFormat by remember { mutableStateOf(ExportFormat.WAV) }
+    var confirmDiscard by remember { mutableStateOf(false) }
     val duration = state.durationFrames
     val position = state.positionFrames
 
@@ -1260,6 +1262,45 @@ private fun PlayerCard(
                 )
                 Text("Writing files...", style = MaterialTheme.typography.bodySmall)
             }
+            Text(
+                text = "Stems are temporary. Export them to keep them; starting another " +
+                    "separation or closing the app normally deletes them.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(
+                onClick = { confirmDiscard = true },
+                enabled = !state.exporting,
+            ) {
+                Text("Discard result")
+            }
+            if (confirmDiscard) {
+                AlertDialog(
+                    onDismissRequest = { confirmDiscard = false },
+                    title = { Text("Discard result?") },
+                    text = {
+                        Text(
+                            "The separated stems will be deleted. Export them first if " +
+                                "you want to keep them.",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                confirmDiscard = false
+                                viewModel.discardResult()
+                            },
+                        ) {
+                            Text("Discard")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmDiscard = false }) {
+                            Text("Keep")
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -1309,7 +1350,7 @@ private fun MessageCard(message: String, onDismiss: () -> Unit) {
 }
 
 private fun phaseLabel(phase: String?): String = when (phase) {
-    "HASHING" -> "Reading the source..."
+    "PREPARING" -> "Preparing..."
     "DOWNLOADING_MODEL" -> "Downloading the model..."
     "DECODING" -> "Decoding audio..."
     "SEPARATING" -> "Separating vocals..."

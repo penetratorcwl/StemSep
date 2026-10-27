@@ -24,7 +24,7 @@ enum class ExportFormat(val extension: String, val mimeType: String) {
 
 class StemExporter(private val context: Context) {
     suspend fun export(
-        stems: CachedStems,
+        stems: SeparatedStems,
         treeUri: Uri,
         format: ExportFormat,
         onProgress: (Float) -> Unit = {},

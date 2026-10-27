@@ -12,11 +12,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.UUID
 
 enum class SeparationPhase {
-    HASHING,
+    PREPARING,
     DOWNLOADING_MODEL,
     DECODING,
     SEPARATING,
@@ -34,13 +33,12 @@ data class SeparationProgress(
 )
 
 data class SeparationResult(
-    val stems: CachedStems,
-    val cached: Boolean,
+    val stems: SeparatedStems,
 )
 
 class SeparationPipeline(
     private val context: Context,
-    private val cache: StemCache = StemCache(context),
+    private val storage: StemStorage = StemStorage(context),
     private val downloader: ModelDownloader = ModelDownloader(context),
     private val decoder: AudioDecoder = AudioDecoder(context),
 ) {
@@ -56,30 +54,17 @@ class SeparationPipeline(
         isCancelled: () -> Boolean = { false },
     ): SeparationResult = withContext(Dispatchers.IO) {
         val sourceInfo = readSourceInfo(uri)
-        onProgress(SeparationProgress(SeparationPhase.HASHING, 0f))
-        val sourceHash = hashSource(uri, sourceInfo.sizeBytes, onProgress, isCancelled)
-        val cacheKey = cache.keyFor(
-            sourceHash = sourceHash,
-            modelId = model.id,
-            backend = backend,
-            profile = acceleratorMode.cacheId,
-        )
-
-        cache.find(cacheKey)?.let { cached ->
-            onProgress(SeparationProgress(SeparationPhase.FINALIZING, 1f))
-            return@withContext SeparationResult(cached, cached = true)
-        }
-
-        val modelFile = downloader.ensureModel(model) { fraction ->
-            onProgress(SeparationProgress(SeparationPhase.DOWNLOADING_MODEL, fraction))
-        }
-        currentCoroutineContext().ensureActive()
-        if (isCancelled()) throw InterruptedException("Separation cancelled")
-
-        val tempDirectory = cache.createTempDirectory()
+        onProgress(SeparationProgress(SeparationPhase.PREPARING, 0f))
+        val tempDirectory = storage.createSessionDirectory()
         val decodedFile = File(context.cacheDir, "stemsep-decode-${UUID.randomUUID()}.f32")
         var committed = false
         try {
+            val modelFile = downloader.ensureModel(model) { fraction ->
+                onProgress(SeparationProgress(SeparationPhase.DOWNLOADING_MODEL, fraction))
+            }
+            currentCoroutineContext().ensureActive()
+            if (isCancelled()) throw InterruptedException("Separation cancelled")
+
             onProgress(SeparationProgress(SeparationPhase.DECODING, 0f))
             val decoded = decoder.decode(
                 uri = uri,
@@ -108,8 +93,8 @@ class SeparationPipeline(
             }
             val initialThreads = autoController?.threads
                 ?: cpuThreads.coerceIn(1, threadLimit)
-            val vocalsFile = File(tempDirectory, StemCache.VOCALS_FILE)
-            val instrumentalFile = File(tempDirectory, StemCache.INSTRUMENTAL_FILE)
+            val vocalsFile = File(tempDirectory, StemStorage.VOCALS_FILE)
+            val instrumentalFile = File(tempDirectory, StemStorage.INSTRUMENTAL_FILE)
             onPreview(
                 LiveStemPreview(
                     vocalsFile = vocalsFile,
@@ -223,7 +208,7 @@ class SeparationPipeline(
                 cpuThreads = cpuThreads,
                 acceleratorMode = acceleratorMode.cacheId,
             )
-            val stems = cache.commit(cacheKey, tempDirectory, metadata)
+            val stems = storage.finishSession(tempDirectory, metadata)
             committed = true
             onProgress(
                 SeparationProgress(
@@ -236,52 +221,19 @@ class SeparationPipeline(
                     workerThreads = finalWorkerThreads,
                 ),
             )
-            SeparationResult(stems, cached = false)
+            SeparationResult(stems)
         } finally {
             decodedFile.delete()
-            if (!committed) cache.deleteTemp(tempDirectory)
+            if (!committed) storage.deleteTemp(tempDirectory)
         }
-    }
-
-    private suspend fun hashSource(
-        uri: Uri,
-        sizeBytes: Long,
-        onProgress: (SeparationProgress) -> Unit,
-        isCancelled: () -> Boolean,
-    ): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(1024 * 1024)
-        var total = 0L
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                if (isCancelled()) throw InterruptedException("Separation cancelled")
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                digest.update(buffer, 0, read)
-                total += read
-                if (sizeBytes > 0) {
-                    onProgress(
-                        SeparationProgress(
-                            SeparationPhase.HASHING,
-                            (total.toDouble() / sizeBytes).toFloat().coerceIn(0f, 1f),
-                        ),
-                    )
-                }
-            }
-        } ?: throw IOException("Could not open the selected audio file")
-        onProgress(SeparationProgress(SeparationPhase.HASHING, 1f))
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun readSourceInfo(uri: Uri): SourceInfo {
         var displayName = uri.lastPathSegment ?: "audio"
-        var sizeBytes = -1L
         runCatching {
             context.contentResolver.query(
                 uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                arrayOf(OpenableColumns.DISPLAY_NAME),
                 null,
                 null,
                 null,
@@ -291,15 +243,11 @@ class SeparationPipeline(
                     if (nameIndex >= 0 && !cursor.isNull(nameIndex)) {
                         displayName = cursor.getString(nameIndex)
                     }
-                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
-                        sizeBytes = cursor.getLong(sizeIndex)
-                    }
                 }
             }
         }
-        return SourceInfo(displayName, sizeBytes)
+        return SourceInfo(displayName)
     }
 
-    private data class SourceInfo(val displayName: String, val sizeBytes: Long)
+    private data class SourceInfo(val displayName: String)
 }

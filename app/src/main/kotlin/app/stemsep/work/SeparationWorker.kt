@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.stemsep.AppVisibilityTracker
@@ -51,7 +52,7 @@ class SeparationWorker(
         LivePlaybackTracker.reset()
         createChannel()
         val latestProgress = AtomicReference(
-            SeparationProgress(SeparationPhase.HASHING, 0f),
+            SeparationProgress(SeparationPhase.PREPARING, 0f),
         )
         val foregroundStarted = AtomicBoolean(false)
 
@@ -123,7 +124,13 @@ class SeparationWorker(
                     },
                     isCancelled = { isStopped },
                 )
-                Result.success(workDataOf(KEY_CACHE_KEY to result.stems.key))
+                Result.success(
+                    workDataOf(
+                        KEY_VOCALS_PATH to result.stems.vocals.absolutePath,
+                        KEY_INSTRUMENTAL_PATH to result.stems.instrumental.absolutePath,
+                        KEY_METADATA to result.stems.metadata.toJsonString(),
+                    ),
+                )
             } catch (error: CancellationException) {
                 throw error
             } catch (error: InterruptedException) {
@@ -136,8 +143,10 @@ class SeparationWorker(
         }
     }
 
-    override suspend fun getForegroundInfo(): ForegroundInfo =
-        foregroundInfo(0f, SeparationPhase.HASHING)
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        createChannel()
+        return foregroundInfo(0f, SeparationPhase.PREPARING)
+    }
 
     private fun errorData(error: Exception) = workDataOf(
         KEY_ERROR to (error.message ?: error::class.java.simpleName),
@@ -162,6 +171,11 @@ class SeparationWorker(
             .setContentTitle(applicationContext.getString(R.string.notification_title))
             .setContentText(phaseText(phase))
             .setContentIntent(contentIntent())
+            .addAction(
+                R.drawable.ic_notification,
+                applicationContext.getString(R.string.notification_cancel),
+                cancelIntent(),
+            )
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -187,8 +201,11 @@ class SeparationWorker(
         )
     }
 
+    private fun cancelIntent(): PendingIntent =
+        WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
+
     private fun phaseText(phase: SeparationPhase): String = when (phase) {
-        SeparationPhase.HASHING -> applicationContext.getString(R.string.phase_hashing)
+        SeparationPhase.PREPARING -> applicationContext.getString(R.string.phase_preparing)
         SeparationPhase.DOWNLOADING_MODEL -> applicationContext.getString(R.string.phase_downloading)
         SeparationPhase.DECODING -> applicationContext.getString(R.string.phase_decoding)
         SeparationPhase.SEPARATING -> applicationContext.getString(R.string.phase_separating)
@@ -229,7 +246,9 @@ class SeparationWorker(
         const val KEY_INFERENCE_MS = "inference_ms"
         const val KEY_INFERENCE_CHUNKS = "inference_chunks"
         const val KEY_WORKER_THREADS = "worker_threads"
-        const val KEY_CACHE_KEY = "cache_key"
+        const val KEY_VOCALS_PATH = "vocals_path"
+        const val KEY_INSTRUMENTAL_PATH = "instrumental_path"
+        const val KEY_METADATA = "metadata"
         const val KEY_ERROR = "error"
 
         const val WORK_NAME = "stemsep-separation"

@@ -11,7 +11,7 @@ import java.io.File
 import kotlin.math.max
 
 /**
- * Plays the two cached raw stems through one AudioTrack and a software mixer.
+ * Plays the two raw stems through one AudioTrack and a software mixer.
  *
  * Playback position is tracked in source frames; seeking flushes the stream and
  * invalidates the in-flight write with a generation counter.

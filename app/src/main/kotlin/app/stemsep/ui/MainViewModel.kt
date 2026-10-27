@@ -13,18 +13,20 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import app.stemsep.AudioFocusController
 import app.stemsep.LivePlaybackTracker
 import app.stemsep.StemSepApp
 import app.stemsep.dsp.StemMode
 import app.stemsep.separation.AcceleratorMode
-import app.stemsep.separation.CachedStems
 import app.stemsep.separation.ComputeBackend
 import app.stemsep.separation.ComputeCapabilities
 import app.stemsep.separation.ComputeCapabilityDetector
 import app.stemsep.separation.ExportFormat
 import app.stemsep.separation.LiveStemPlayer
 import app.stemsep.separation.ModelCatalog
+import app.stemsep.separation.SeparatedStems
 import app.stemsep.separation.SeparationPhase
+import app.stemsep.separation.StemMetadata
 import app.stemsep.separation.StemPlayer
 import app.stemsep.ui.theme.AppSettings
 import app.stemsep.ui.theme.ThemeMode
@@ -60,7 +62,7 @@ data class UiState(
     val phase: String? = null,
     val progress: Float = 0f,
     val error: String? = null,
-    val cached: CachedStems? = null,
+    val stems: SeparatedStems? = null,
     val playerReady: Boolean = false,
     val durationFrames: Long = 0,
     val positionFrames: Long = 0,
@@ -122,6 +124,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
+    private val audioFocus = AudioFocusController(application) { onAudioFocusLost() }
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            container.storage.clearLegacyCaches()
+        }
+    }
+
     private var player: StemPlayer? = null
     private var livePlayer: LiveStemPlayer? = null
     private var liveKey: String? = null
@@ -129,7 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var statsJob: Job? = null
 
     fun selectAudio(uri: Uri?) {
-        if (uri == null) return
+        if (uri == null || _state.value.exporting) return
         val context = getApplication<Application>()
         runCatching {
             context.contentResolver.takePersistableUriPermission(
@@ -143,6 +153,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         releasePlayer()
         releaseLivePreview()
         LivePlaybackTracker.reset()
+        if (!_state.value.running) {
+            container.storage.clearSession()
+        }
         _state.value = UiState(
             selectedUri = uri,
             selectedName = displayName(uri),
@@ -160,13 +173,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectModel(modelId: String) {
-        if (modelId == _state.value.modelId) return
+        if (modelId == _state.value.modelId || _state.value.exporting) return
         releasePlayer()
         releaseLivePreview()
+        if (!_state.value.running) {
+            container.storage.clearSession()
+        }
         _state.update {
             it.copy(
                 modelId = modelId,
-                cached = null,
+                stems = null,
                 playerReady = false,
                 durationFrames = 0,
                 positionFrames = 0,
@@ -197,10 +213,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectBackend(backend: ComputeBackend) {
-        if (backend == _state.value.backend) return
+        if (backend == _state.value.backend || _state.value.exporting) return
         if (!capabilities.supports(backend)) return
         releasePlayer()
         releaseLivePreview()
+        if (!_state.value.running) {
+            container.storage.clearSession()
+        }
         _state.update {
             it.copy(
                 backend = backend,
@@ -210,7 +229,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     null
                 },
                 fallbackReason = null,
-                cached = null,
+                stems = null,
                 playerReady = false,
                 durationFrames = 0,
                 positionFrames = 0,
@@ -275,7 +294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun start() {
         val current = _state.value
         val uri = current.selectedUri ?: return
-        if (current.running) return
+        if (current.running || current.exporting) return
         releasePlayer()
         releaseLivePreview()
         LivePlaybackTracker.reset()
@@ -307,10 +326,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 running = true,
                 workId = request.id,
-                phase = SeparationPhase.HASHING.name,
+                phase = SeparationPhase.PREPARING.name,
                 progress = 0f,
                 error = null,
-                cached = null,
+                stems = null,
                 playerReady = false,
                 durationFrames = 0,
                 positionFrames = 0,
@@ -362,6 +381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching {
             if (currentPlayer.isPlaying()) {
                 currentPlayer.pause()
+                audioFocus.abandon()
                 _state.update {
                     it.copy(
                         livePreviewPlaying = false,
@@ -370,6 +390,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 updateLivePlaybackTracker()
             } else {
+                if (!audioFocus.request()) {
+                    _state.update {
+                        it.copy(error = "Another app is using audio focus")
+                    }
+                    return@runCatching
+                }
                 if (_state.value.livePositionFrames >= _state.value.liveTotalFrames) {
                     currentPlayer.seekTo(0)
                     _state.update { it.copy(livePositionFrames = 0) }
@@ -379,6 +405,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updateLivePlaybackTracker()
             }
         }.onFailure { error ->
+            audioFocus.abandon()
             _state.update {
                 it.copy(
                     livePreviewPlaying = false,
@@ -393,7 +420,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val total = _state.value.liveTotalFrames
         val target = frame.coerceIn(0L, total)
         currentPlayer.seekTo(target)
-        if (target >= total) currentPlayer.pause()
+        if (target >= total) {
+            currentPlayer.pause()
+            audioFocus.abandon()
+        }
         _state.update {
             it.copy(
                 livePositionFrames = target,
@@ -419,15 +449,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching {
             if (currentPlayer.isPlaying()) {
                 currentPlayer.pause()
+                audioFocus.abandon()
                 _state.update { it.copy(isPlaying = false) }
             } else {
+                if (!audioFocus.request()) {
+                    _state.update {
+                        it.copy(error = "Another app is using audio focus")
+                    }
+                    return@runCatching
+                }
                 if (_state.value.positionFrames >= _state.value.durationFrames) {
+                    currentPlayer.seekTo(0)
                     _state.update { it.copy(positionFrames = 0) }
                 }
                 currentPlayer.play()
                 _state.update { it.copy(isPlaying = true, error = null) }
             }
         }.onFailure { error ->
+            audioFocus.abandon()
             _state.update {
                 it.copy(isPlaying = false, error = error.message ?: "Playback failed")
             }
@@ -438,7 +477,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val duration = _state.value.durationFrames
         val target = frame.coerceIn(0L, duration)
         player?.seekTo(target)
-        if (target >= duration) player?.pause()
+        if (target >= duration) {
+            player?.pause()
+            audioFocus.abandon()
+        }
         _state.update {
             it.copy(
                 positionFrames = target,
@@ -459,7 +501,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun export(format: ExportFormat, treeUri: Uri) {
-        val stems = _state.value.cached ?: return
+        val stems = _state.value.stems ?: return
         if (_state.value.exporting) return
         viewModelScope.launch {
             _state.update { it.copy(exporting = true, exportProgress = 0f, error = null, message = null) }
@@ -486,6 +528,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun discardResult() {
+        if (_state.value.running || _state.value.exporting) return
+        releasePlayer()
+        releaseLivePreview()
+        container.storage.clearSession()
+        _state.update {
+            it.copy(
+                stems = null,
+                workId = null,
+                playerReady = false,
+                durationFrames = 0,
+                positionFrames = 0,
+                isPlaying = false,
+                mode = StemMode.MIX,
+                vocalLevel = 1f,
+                phase = null,
+                progress = 0f,
+                error = null,
+                effectiveBackend = if (it.backend == ComputeBackend.CPU) {
+                    ComputeBackend.CPU
+                } else {
+                    null
+                },
+                fallbackReason = null,
+                cpuUsagePercent = null,
+                gpuUsagePercent = null,
+                powerWatts = null,
+                energyMilliAmpHours = null,
+                batteryCharging = false,
+                inferenceAverageMillis = 0,
+                inferenceChunks = 0,
+                workerThreads = 0,
+                cpuHistory = emptyList(),
+                gpuHistory = emptyList(),
+                inferenceHistory = emptyList(),
+                message = "Temporary stems discarded",
+            )
+        }
+    }
+
     fun clearMessage() {
         _state.update { it.copy(message = null, error = null) }
     }
@@ -495,6 +577,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopStatsSampler()
         releasePlayer()
         releaseLivePreview()
+        if (!_state.value.running && !_state.value.exporting) {
+            container.storage.clearSession()
+        }
         super.onCleared()
     }
 
@@ -562,11 +647,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 error = null,
                             )
                         }
-                        val key = info.outputData.getString(SeparationWorker.KEY_CACHE_KEY)
-                        if (key != null) {
-                            loadCached(key)
+                        val stems = readSession(info.outputData)
+                        if (stems != null) {
+                            openSession(stems)
                         } else {
-                            _state.update { it.copy(error = "The worker returned no cache key") }
+                            _state.update {
+                                it.copy(error = "The worker returned an incomplete stem session")
+                            }
                         }
                     }
 
@@ -630,6 +717,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sampleRate = _state.value.liveSampleRate,
                         playing = playing,
                     )
+                    if (!playing && frame >= _state.value.liveTotalFrames) {
+                        audioFocus.abandon()
+                    }
                     _state.update { state ->
                         state.copy(
                             livePositionFrames = frame,
@@ -675,32 +765,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadCached(key: String) {
-        val stems = container.cache.find(key)
-        if (stems == null) {
-            _state.update { it.copy(error = "Cached stems are missing") }
-            return
-        }
+    private fun readSession(data: Data): SeparatedStems? {
+        val vocalsPath = data.getString(SeparationWorker.KEY_VOCALS_PATH) ?: return null
+        val instrumentalPath = data.getString(SeparationWorker.KEY_INSTRUMENTAL_PATH)
+            ?: return null
+        val metadata = data.getString(SeparationWorker.KEY_METADATA)
+            ?.let { StemMetadata.fromJsonString(it) }
+            ?: return null
+        val stems = SeparatedStems(
+            vocals = File(vocalsPath),
+            instrumental = File(instrumentalPath),
+            metadata = metadata,
+        )
+        return stems.takeIf { container.storage.validate(it) }
+    }
+
+    private fun openSession(stems: SeparatedStems) {
         releasePlayer()
-        player = StemPlayer(
-            vocalsFile = stems.vocals,
-            instrumentalFile = stems.instrumental,
-            frameCount = stems.metadata.frameCount,
-            sampleRate = stems.metadata.sampleRate,
-        ) { frame ->
-            _state.update { state ->
-                state.copy(
-                    positionFrames = frame,
-                    isPlaying = if (frame >= state.durationFrames) false else state.isPlaying,
+        player = runCatching {
+            StemPlayer(
+                vocalsFile = stems.vocals,
+                instrumentalFile = stems.instrumental,
+                frameCount = stems.metadata.frameCount,
+                sampleRate = stems.metadata.sampleRate,
+            ) { frame ->
+                if (frame >= _state.value.durationFrames) {
+                    audioFocus.abandon()
+                }
+                _state.update { state ->
+                    state.copy(
+                        positionFrames = frame,
+                        isPlaying = if (frame >= state.durationFrames) false else state.isPlaying,
+                    )
+                }
+            }
+        }.getOrElse { error ->
+            _state.update {
+                it.copy(
+                    error = "Could not open the completed stems: " +
+                        (error.message ?: "unknown error"),
                 )
             }
+            return
         }
         val acceleratorMode = AcceleratorMode.fromId(stems.metadata.acceleratorMode)
         selectedAcceleratorMode = acceleratorMode
         prefs.edit().putString("accelerator_mode", acceleratorMode.cacheId).apply()
         _state.update {
             it.copy(
-                cached = stems,
+                stems = stems,
+                modelId = stems.metadata.modelId,
                 backend = ComputeBackend.fromId(stems.metadata.requestedBackend),
                 effectiveBackend = ComputeBackend.fromId(stems.metadata.effectiveBackend),
                 fallbackReason = stems.metadata.fallbackReason,
@@ -711,6 +825,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isPlaying = false,
                 mode = StemMode.MIX,
                 vocalLevel = 1f,
+                error = null,
             )
         }
     }
@@ -753,6 +868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun releaseLivePreview() {
+        audioFocus.abandon()
         livePlayer?.close()
         livePlayer = null
         liveKey = null
@@ -780,8 +896,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun releasePlayer() {
+        audioFocus.abandon()
         player?.close()
         player = null
+    }
+
+    private fun onAudioFocusLost() {
+        runCatching { player?.pause() }
+        runCatching { livePlayer?.pause() }
+        _state.update {
+            it.copy(
+                isPlaying = false,
+                livePreviewPlaying = false,
+            )
+        }
+        updateLivePlaybackTracker()
     }
 
     private fun displayName(uri: Uri): String {

@@ -26,7 +26,7 @@ Documentation is part of "done". Before changing code:
 3. After the change, update the affected docs, `README.md`, and this file in the same commit.
 4. In the final response, state which docs were updated and what remains unverified.
 
-When context is compacted, preserve the docs paths, the current cache/version semantics, and the backend limitations in the summary. A fresh agent must re-read the docs before editing.
+When context is compacted, preserve the docs paths, the current session/version semantics, and the backend limitations in the summary. A fresh agent must re-read the docs before editing.
 
 ## Read these first
 
@@ -42,7 +42,7 @@ When context is compacted, preserve the docs paths, the current cache/version se
 
 ```text
 core-dsp/     pure JVM DSP and tests; no Android imports
-separation/   Android library: decoder, ONNX, cache, export, player
+separation/   Android library: decoder, ONNX, session storage, export, player
 app/          Compose UI, ViewModel, WorkManager, SAF
 docs/         technical documentation
 .github/      CI and APK release workflow
@@ -60,7 +60,7 @@ Important files:
 - `separation/src/main/kotlin/app/stemsep/separation/OnnxMdxEngine.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/AutoThreadController.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/SeparationPipeline.kt`
-- `separation/src/main/kotlin/app/stemsep/separation/StemCache.kt`
+- `separation/src/main/kotlin/app/stemsep/separation/StemStorage.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemExporter.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/StemPlayer.kt`
 - `separation/src/main/kotlin/app/stemsep/separation/LiveStemPlayer.kt`
@@ -69,6 +69,7 @@ Important files:
 - `app/src/main/kotlin/app/stemsep/ui/ComputeStatsSampler.kt`
 - `app/src/main/kotlin/app/stemsep/LivePlaybackTracker.kt`
 - `app/src/main/kotlin/app/stemsep/AppVisibilityTracker.kt`
+- `app/src/main/kotlin/app/stemsep/AudioFocusController.kt`
 - `app/src/main/kotlin/app/stemsep/work/SeparationWorker.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepRoot.kt`
 - `app/src/main/kotlin/app/stemsep/ui/StemSepScreen.kt`
@@ -92,27 +93,27 @@ The author's Termux environment may not have an Android SDK. GitHub Actions is t
 
 ```text
 SAF URI
-  -> SHA-256 source hash
-  -> cache lookup
+  -> start a fresh temporary session (delete the previous one)
   -> model download + SHA-256 verification
   -> MediaExtractor/MediaCodec decode to 44.1 kHz stereo f32
   -> MDX STFT + ONNX inference (CPU or Snapdragon NNAPI) + overlap-add
   -> vocals.f32 + instrumental.f32 (flushed progressively)
   -> live preview reads growing files; WorkManager publishes paths/frames/stats
-  -> meta.json (requested/effective backend, fallback, CPU threads, accelerator mode)
-  -> cache commit
+  -> validate and move the work directory into the session root
+  -> worker returns stem paths + JSON metadata (requested/effective backend, fallback, CPU threads, accelerator mode)
   -> AudioTrack mixer / SAF export
 
-Live preview starts after the first separated chunk and defaults to vocals. It is released before the committed stems are opened.
+Live preview starts after the first separated chunk and defaults to vocals. It is released before the completed stems are opened. There is no source hashing or stem cache lookup.
 ```
 
-Cache key:
+Session storage:
 
 ```text
-<source-sha256>-<model-id>-<requested-backend>-<profile>-v<separator-version>
+context.cacheDir/stemsep-session       completed temporary stems
+context.cacheDir/stemsep-session-work  work directory
 ```
 
-`SEPARATOR_VERSION` is `3`; `profile` is `balanced` or `accelerator` (CPU always `balanced`). The cache is under `context.cacheDir/stems`; work files are under `context.cacheDir/stems-work`. A valid entry has both stem files exactly `frameCount * 8` bytes and a matching separator version. Metadata stores requested/effective backends, an optional fallback reason, the CPU thread count and the accelerator mode. CPU thread count is not part of the key because it does not change the audio.
+`SEPARATOR_VERSION` is `3` and remains in metadata for diagnostics. A valid session has both stem files exactly `frameCount * 8` bytes and a positive frame count/sample rate. Starting a new separation deletes the previous session. Clearing also removes the legacy `stems`/`stems-work` cache directories, and `MainViewModel` clears those legacy directories at startup. A leftover current session from process death is never loaded; it is removed by the next separation or normal app exit. `MainViewModel.onCleared()` removes it when no job or export is active. Export is the only way to keep stems.
 
 ## Models
 
@@ -143,7 +144,7 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - NNAPI Balanced mode retries on CPU if session creation fails. Accelerator-only mode adds `CPU_DISABLED` and does not retry, so the job fails instead of silently using CPU. Unsupported nodes may fall back per operation even when the session succeeds; the Java API cannot report that.
 - Compute stats show process CPU share, average inference time, best-effort GPU sysfs values, battery power and run energy as rolling values; CPU/GPU/inference have sparklines and tapping a metric opens a detail bottom sheet. GPU counter sysfs values are sampled as deltas between readings, not cumulative averages. Android does not expose reliable GPU/NPU utilization or core counts.
 - QNN HTP is not enabled. The current model is float32; QNN HTP requires a quantized model and calibration. QNN GPU is possible but adds a large runtime and is not currently packaged.
-- See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or cache keys.
+- See [`docs/COMPUTE_BACKENDS.md`](docs/COMPUTE_BACKENDS.md) before changing providers or session semantics.
 
 ## Android/UI invariants
 
@@ -152,10 +153,10 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - WorkManager uses unique work `stemsep-separation`.
 - The worker is a `CoroutineWorker`; `getForegroundInfo()` is `suspend`.
 - The foreground service type is `dataSync`; manifest permissions must stay consistent.
-- The foreground notification is intentionally delayed until `AppVisibilityTracker` reports that the Activity is no longer started. The notification channel is `stemsep-separation-v2` at `IMPORTANCE_DEFAULT` (not silent). WorkManager's normal-work 10-minute limit remains a risk if the app stays visible for a very long separation.
+- The foreground notification is intentionally delayed until `AppVisibilityTracker` reports that the Activity is no longer started. The notification channel is `stemsep-separation-v2` at `IMPORTANCE_DEFAULT` (not silent) and includes a WorkManager cancel action. WorkManager's normal-work 10-minute limit remains a risk if the app stays visible for a very long separation.
 - Source audio and export tree use SAF; do not replace with broad storage permissions.
-- The live and final stem players must be released when the source/model/backend changes, on job success/failure/cancel, and in `MainViewModel.onCleared()`.
-- Live preview reads the worker's growing temporary stem files; it must not read a partial file after the work directory is deleted.
+- The live and final stem players must be released when the source/model/backend changes, on job success/failure/cancel, when the result is discarded, and in `MainViewModel.onCleared()`.
+- Live preview reads the worker's growing temporary stem files; it must not read a partial file after the work directory is deleted or moved into the session root.
 - Keep model inference on `Dispatchers.IO` or a worker, never on the main thread.
 - GPU and NPU are not separate options: NNAPI delegates to the Qualcomm driver. Show requested/effective backend and fallback reason; do not claim a specific NPU/GPU placement.
 - CPU thread count is a real setting (Auto or 1..reported cores). Auto is sent to the worker as `cpu_threads = 0`; `AutoThreadController` owns the dynamic policy and `OnnxMdxEngine.setThreads` recreates the CPU session at chunk boundaries. GPU/NPU core count is not controllable through NNAPI; the Accelerator-only policy only disables CPU fallback and hides the CPU thread control.
@@ -163,7 +164,7 @@ Never commit `.onnx` files or other model weights. Downloads must use HTTPS and 
 - The app uses the AndroidX splash screen, then a Compose X-style launch zoom (icon scales beyond the screen and fades to reveal the UI); keep the post-splash theme pointing at `Theme.StemSep`.
 - Theme preferences are stored in `stemsep-settings`; Material You uses dynamic colors on API 31+ and falls back to Violet below that.
 - The main/settings screen crossfade and the stats detail sheet use Compose Material 3; keep the bottom sheet swipe-dismissible. The system back button on Settings must return to the main screen via `BackHandler`.
-- Live and final playback controls belong in the card header's top-right; the three stem-mode chips fill the row and have no separate "Mode" label. The inference detail chart draws a dot for every sample.
+- Live and final playback controls belong in the card header's top-right; the three stem-mode chips fill the row and have no separate "Mode" label. The inference detail chart draws a dot for every sample. Playback requests media audio focus; loss or ducking pauses both players and does not auto-resume.
 
 ## Release process
 
@@ -194,8 +195,8 @@ Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNIN
 - Compute controls/stats/UI/splash: CI run `40400848607` passed; the APK verified with the stable certificate.
 - Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom: CI run `40406906028` passed; the APK verified with the stable certificate.
 - Runtime on a physical phone: live preview, NNAPI, fallback, compute stats, charts, theme switching and launch timing are not yet verified on a device.
-- Known gaps: no QNN HTP (float models), no notification cancel action, no background playback service, no audio focus, no reliable GPU/NPU utilization, cache in `cacheDir`.
-- Live preview uses WorkManager progress paths and reads growing files; final stems replace it after commit.
+- Known gaps: no QNN HTP (float models), no background playback service, no reliable GPU/NPU utilization, temporary session in `cacheDir` that is deleted on exit.
+- Live preview uses WorkManager progress paths and reads growing files; the completed session replaces it after finalization. Stems are not reused across runs.
 
 ## Working rules
 
@@ -204,6 +205,6 @@ Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNIN
 - Prefer small, focused changes and preserve existing style.
 - Do not add comments unless they are necessary for non-obvious invariants.
 - After DSP changes, run `:core-dsp:test`.
-- After backend/cache changes, run `:separation:testDebugUnitTest` in CI.
+- After backend/session-storage changes, run `:separation:testDebugUnitTest` in CI.
 - After Android changes, rely on GitHub Actions for the authoritative build.
 - Update this file and `docs/` when architecture, model configuration, backend, playback or release behavior changes.

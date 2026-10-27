@@ -1,6 +1,6 @@
 # StemSep
 
-On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, caches both stems, and plays them through a single synchronized mixer. While separation runs, the already-separated vocal is available as a live preview and switches to the committed stems when the job finishes. CPU worker threads support an Auto mode that adjusts at chunk boundaries to keep about five seconds buffered during live playback; the NNAPI CPU-fallback policy is configurable. Compute statistics include live mini charts, battery power/energy and a swipe-dismiss detail sheet; the app also has a settings screen with Material You and several color palettes, plus a launch zoom animation. The separation notification appears only after the app goes to the background.
+On-device vocal / instrumental separation for Android. The app decodes a user-selected audio file, runs a UVR MDX-Net ONNX model locally, and plays both stems through a single synchronized mixer. It keeps only the current temporary result: starting another separation, discarding it, or leaving the app normally removes the stems, so export is the way to keep them. Old versions' stem cache directories are removed automatically. While separation runs, the already-separated vocal is available as a live preview and switches to the completed stems when the job finishes. CPU worker threads support an Auto mode that adjusts at chunk boundaries to keep about five seconds buffered during live playback; the NNAPI CPU-fallback policy is configurable. Compute statistics include live mini charts, battery power/energy and a swipe-dismiss detail sheet; the app also has a settings screen with Material You and several color palettes, plus a launch zoom animation. The separation notification appears only after the app goes to the background.
 
 ## Download
 
@@ -26,8 +26,8 @@ The model uses stereo 44.1 kHz, periodic Hann, `n_fft` 6144, hop 1024, reflect p
 ## Architecture
 
 - `:core-dsp` — pure JVM DSP: MDX STFT/iSTFT, streaming overlap-add, sinc resampler, WAV reader/writer, mixer. Unit tested locally and in CI.
-- `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference (CPU or Snapdragon NNAPI), cache, WAV/FLAC export.
-- `:app` — Compose UI, WorkManager separation job with a background-only foreground notification, live stem preview, compute settings/statistics with charts, settings/themes, launch zoom animation, AudioTrack mixer/player, SAF pickers.
+- `:separation` — Android library: MediaExtractor/MediaCodec decoding, model catalog/downloader, ONNX Runtime inference (CPU or Snapdragon NNAPI), temporary session storage, WAV/FLAC export.
+- `:app` — Compose UI, WorkManager separation job with a background-only foreground notification and cancel action, live stem preview, compute settings/statistics with charts, settings/themes, launch zoom animation, AudioTrack mixer/player, audio focus, SAF pickers, result discard.
 
 ## Documentation
 
@@ -54,5 +54,6 @@ CI runs all three on every push. The debug APK is uploaded as the `stemsep-debug
 - Minimum SDK 26, target/compile SDK 36.
 - ONNX Runtime 1.28.0 CPU execution provider. CPU worker threads are selectable from 1 to the reported core count, or Auto (default 4 at start). Auto raises the intra-op count when live playback has less than five seconds buffered and lowers it again after the buffer recovers. Snapdragon GPU/NPU via NNAPI is available as an experimental option with an inline "Allow CPU fallback" switch; GPU and NPU are one NNAPI option because the Qualcomm driver chooses per operation. In Accelerator-only mode the CPU thread control is hidden. The UI shows requested/active backend, any session-creation fallback, CPU/GPU/inference history charts, average inference time, battery power (W) and run energy (mAh). Android does not expose reliable GPU/NPU utilization or core counts. The earlier NNAPI benchmark was slower on the test phone and needs re-measuring on the target device.
 - The QNN HTP NPU path is not enabled yet because the current model is float32 and HTP requires a quantized model.
+- Separated stems are temporary and are not reused across runs. Export before starting another separation or leaving the app.
 - The model license is not bundled; the user downloads the model directly from its source.
 - FLAC export uses `java-flac-encoder` (LGPL).
