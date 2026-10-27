@@ -46,7 +46,7 @@ Last updated: 2026-10-27
 - Compute controls, stats, splash and UI changes passed CI run `40400848607`; the APK also verified with the stable certificate.
 - Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom passed CI run `40406906028`; the APK verified with the stable certificate and the `latest` release asset was `137,451,530` bytes.
 - Auto CPU threads, playback header/mode chips, power/energy, GPU counter deltas, settings back handling and the delayed notification passed CI run `40413756893`; the follow-up docs-only runs `40414141571` and `40414432613` also passed both jobs. The APK verified with the stable certificate and the `latest` release asset was `137,467,914` bytes.
-- Cache removal, temporary session storage, discard, notification cancel and audio focus passed CI run `40425367343`; both jobs passed, including `:separation:testDebugUnitTest` with the new storage tests. The APK verified with the stable certificate and the `latest` release asset was `137,468,310` bytes (`sha256:deec28efa1c51849bb36f085cb94ce06517f0bfc04e444b8eb3e113e8c6835eb`).
+- Cache removal, temporary session storage, discard, notification cancel and audio focus passed CI runs `40425367343` and the follow-up `40425774605`; both jobs passed, including `:separation:testDebugUnitTest` with the new storage tests. The APK verified with the stable certificate; each push rebuilds the `latest` asset.
 - The NNAPI path compiles; it has not been executed on a Snapdragon device in this environment.
 - Live-preview code compiles in CI; it has not been runtime-tested on a device yet.
 
