@@ -183,7 +183,7 @@ Direct APK:
 https://github.com/penetratorcwl/StemSep/releases/latest/download/StemSep-debug.apk
 ```
 
-The release step uses `GITHUB_TOKEN` with job-level `contents: write`. Do not commit a token. If release publishing fails, check the repository's Actions permissions before changing the workflow.
+The release step uses `GITHUB_TOKEN` with job-level `contents: write`; it updates the `latest` asset, notes and target commit to the pushed SHA. Do not commit a token. If release publishing fails, check the repository's Actions permissions before changing the workflow.
 
 Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNING_KEY_ALIAS` (`stemsep`) and `SIGNING_KEY_PASSWORD`. The stable certificate SHA-256 is `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`. Never commit the keystore or print the secrets. Builds before `035f3a7` used an ephemeral key, so users must uninstall `app.stemsep.debug` once before installing a stable-key APK. Push builds fail if the signing secret is missing; pull-request builds may use an ephemeral debug key.
 
@@ -194,6 +194,7 @@ Signing secrets are `SIGNING_KEYSTORE_BASE64`, `SIGNING_STORE_PASSWORD`, `SIGNIN
 - Stable signing: CI run `40400420284` passed; certificate SHA-256 `0f5e3836bdb644bb0a48a53ca56aa0cc5487d0bb4a0a56be729ccfb0b9e105d2`.
 - Compute controls/stats/UI/splash: CI run `40400848607` passed; the APK verified with the stable certificate.
 - Model cleanup, themes/settings, stats charts/bottom sheet and launch zoom: CI run `40406906028` passed; the APK verified with the stable certificate.
+- Cache removal, temporary sessions, discard, notification cancel and audio focus: CI run `40425367343` passed, including the new storage tests; the APK verified with the stable certificate.
 - Runtime on a physical phone: live preview, NNAPI, fallback, compute stats, charts, theme switching and launch timing are not yet verified on a device.
 - Known gaps: no QNN HTP (float models), no background playback service, no reliable GPU/NPU utilization, temporary session in `cacheDir` that is deleted on exit.
 - Live preview uses WorkManager progress paths and reads growing files; the completed session replaces it after finalization. Stems are not reused across runs.
